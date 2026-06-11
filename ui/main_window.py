@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         current_tab = self.store.get_ui_state('current_tab', 0)
         if 0 <= current_tab < self.tabs.count():
             self.tabs.setCurrentIndex(current_tab)
+            self._on_tab_changed(current_tab)
 
     def _save_project(self) -> bool:
         if self.store.current_project_path:

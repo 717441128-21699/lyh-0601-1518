@@ -130,12 +130,43 @@ class DiffCheckWindow(QWidget):
         ]
 
     def _apply_filter(self):
+        self.store.set_ui_state('diff_department', self.cmb_dept.currentData())
+        self.store.set_ui_state('diff_only_diff', self.chk_only_diff.isChecked())
+        self.store.set_ui_state('diff_only_issue', self.chk_only_issue.isChecked())
+        self.store.set_ui_state('diff_only_unlocked', self.chk_only_unlocked.isChecked())
         self._populate_table()
 
     def refresh(self):
         self._reload_depts()
         self._populate_table()
         self._update_unfinished_stat()
+        self._restore_filter_state()
+
+    def _restore_filter_state(self):
+        saved_dept = self.store.get_ui_state('diff_department', '全部')
+        idx = self.cmb_dept.findData(saved_dept)
+        if idx >= 0:
+            self.cmb_dept.blockSignals(True)
+            self.cmb_dept.setCurrentIndex(idx)
+            self.cmb_dept.blockSignals(False)
+
+        saved_only_diff = self.store.get_ui_state('diff_only_diff', False)
+        saved_only_issue = self.store.get_ui_state('diff_only_issue', False)
+        saved_only_unlocked = self.store.get_ui_state('diff_only_unlocked', False)
+
+        self.chk_only_diff.blockSignals(True)
+        self.chk_only_diff.setChecked(saved_only_diff)
+        self.chk_only_diff.blockSignals(False)
+
+        self.chk_only_issue.blockSignals(True)
+        self.chk_only_issue.setChecked(saved_only_issue)
+        self.chk_only_issue.blockSignals(False)
+
+        self.chk_only_unlocked.blockSignals(True)
+        self.chk_only_unlocked.setChecked(saved_only_unlocked)
+        self.chk_only_unlocked.blockSignals(False)
+
+        self._apply_filter()
 
     def _reload_depts(self):
         current = self.cmb_dept.currentText()

@@ -171,6 +171,7 @@ class RuleCheckWindow(QWidget):
         self._populate_emp_table()
 
     def _apply_filter(self):
+        self.store.set_ui_state('rule_filter', self.cmb_filter.currentData())
         if not self._all_issues:
             return
         filter_val = self.cmb_filter.currentData()
@@ -329,6 +330,16 @@ class RuleCheckWindow(QWidget):
                     if not r.is_locked and not r.review_steps.rule_checked
                 )
                 self.lbl_unfinished.setText(f'未完成规则检查: {unfinished_rule}人')
+        self._restore_filter_state()
+
+    def _restore_filter_state(self):
+        saved = self.store.get_ui_state('rule_filter', 'all')
+        idx = self.cmb_filter.findData(saved)
+        if idx >= 0:
+            self.cmb_filter.blockSignals(True)
+            self.cmb_filter.setCurrentIndex(idx)
+            self.cmb_filter.blockSignals(False)
+            self._apply_filter()
 
     def _batch_mark_rule_checked(self):
         if not self.store.import_status['salary']:

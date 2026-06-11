@@ -201,6 +201,24 @@ class AdjustmentWindow(QWidget):
         self._reload_employees()
         self._reload_log_employees()
         self._populate_history()
+        self._restore_filter_state()
+
+    def _restore_filter_state(self):
+        saved_op_type = self.store.get_ui_state('adj_op_type', 'all')
+        idx = self.cmb_op_type.findData(saved_op_type)
+        if idx >= 0:
+            self.cmb_op_type.blockSignals(True)
+            self.cmb_op_type.setCurrentIndex(idx)
+            self.cmb_op_type.blockSignals(False)
+
+        saved_log_emp = self.store.get_ui_state('adj_log_emp', 'all')
+        idx = self.cmb_log_emp.findData(saved_log_emp)
+        if idx >= 0:
+            self.cmb_log_emp.blockSignals(True)
+            self.cmb_log_emp.setCurrentIndex(idx)
+            self.cmb_log_emp.blockSignals(False)
+
+        self._populate_history()
 
     def _reload_employees(self):
         current = self.cmb_emp.currentData()
@@ -426,6 +444,8 @@ class AdjustmentWindow(QWidget):
             QMessageBox.critical(self, '错误', msg or '操作失败')
 
     def _populate_history(self):
+        self.store.set_ui_state('adj_op_type', self.cmb_op_type.currentData())
+        self.store.set_ui_state('adj_log_emp', self.cmb_log_emp.currentData())
         op_type_filter = self.cmb_op_type.currentData()
         emp_filter = self.cmb_log_emp.currentData()
 

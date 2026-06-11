@@ -196,6 +196,16 @@ class ConfirmWindow(QWidget):
         self._reload_depts()
         self._update_summary()
         self._populate_table()
+        self._restore_filter_state()
+
+    def _restore_filter_state(self):
+        saved_dept = self.store.get_ui_state('confirm_department', '全部')
+        idx = self.cmb_dept.findData(saved_dept)
+        if idx >= 0:
+            self.cmb_dept.blockSignals(True)
+            self.cmb_dept.setCurrentIndex(idx)
+            self.cmb_dept.blockSignals(False)
+            self._populate_table()
 
     def _reload_depts(self):
         current = self.cmb_dept.currentText()
@@ -263,6 +273,7 @@ class ConfirmWindow(QWidget):
                 self.status_label.setStyleSheet('padding: 2px 8px; color: #27ae60; font-weight: bold;')
 
     def _populate_table(self):
+        self.store.set_ui_state('confirm_department', self.cmb_dept.currentData())
         dept = self.cmb_dept.currentData() or '全部'
         records = self.store.get_records_by_department(dept)
         records = sorted(records, key=lambda r: (1 if r.is_locked else 0, -len(r.issues)))
@@ -611,35 +622,47 @@ class ConfirmWindow(QWidget):
         detail_layout = QVBoxLayout(detail_group)
 
         detail_table = QTableWidget()
-        detail_table.setColumnCount(6)
+        detail_table.setColumnCount(7)
         detail_table.setHorizontalHeaderLabels([
-            '员工编号', '姓名', '部门', '本月实发', '上月实发', '未完成项'
+            '员工编号', '姓名', '部门', '本月实发', '上月实发', '较上月变化', '未完成项'
         ])
         detail_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         detail_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         detail_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         detail_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        detail_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         detail_table.setEditTriggers(QTableWidget.NoEditTriggers)
         detail_table.setAlternatingRowColors(True)
         detail_table.setRowCount(len(not_ready))
 
         for row, item in enumerate(sorted(not_ready, key=lambda x: x['department'])):
+            diff_val = item.get('diff')
+            diff_text = f'{diff_val:+,.2f}' if diff_val is not None else '-'
             values = [
                 item['emp_id'], item['name'], item['department'],
                 f'{item["net_salary"]:.2f}',
                 f'{item["last_net"]:.2f}' if item['last_net'] is not None else '-',
+                diff_text,
                 '；'.join(item['reasons']),
             ]
             for col, val in enumerate(values):
                 cell = QTableWidgetItem(str(val))
-                if col < 5:
+                if col < 6:
                     cell.setTextAlignment(Qt.AlignCenter)
                 else:
                     cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
                 cell.setBackground(QBrush(QColor('#fdf2e9')))
-                if col == 5:
+                if col == 5 and diff_val is not None:
+                    if diff_val > 0:
+                        cell.setForeground(QBrush(QColor('#27ae60')))
+                    elif diff_val < 0:
+                        cell.setForeground(QBrush(QColor('#c0392b')))
+                    font = cell.font()
+                    font.setBold(True)
+                    cell.setFont(font)
+                if col == 6:
                     cell.setForeground(QBrush(QColor('#c0392b')))
                     font = cell.font()
                     font.setBold(True)
