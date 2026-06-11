@@ -2,7 +2,7 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QComboBox, QMessageBox,
-    QFileDialog, QSplitter, QFrame
+    QFileDialog, QSplitter, QFrame, QInputDialog, QStatusBar
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QBrush, QFont
@@ -46,9 +46,14 @@ class ConfirmWindow(QWidget):
         self.card_unfinished = self._make_card('待处理', '0', '#e74c3c')
         self.card_issues = self._make_card('仍有问题', '0', '#e67e22')
         self.card_adjusted = self._make_card('已调整', '0', '#8e44ad')
+        self.card_need_rule = self._make_card('未规则检查', '0', '#e67e22')
+        self.card_need_diff = self._make_card('未差异核对', '0', '#e67e22')
+        self.card_need_adj = self._make_card('未调整复核', '0', '#e67e22')
+        self.card_unresolved = self._make_card('有未解决问题', '0', '#c0392b')
 
         for card in [self.card_total, self.card_confirmed, self.card_unfinished,
-                     self.card_issues, self.card_adjusted]:
+                     self.card_issues, self.card_adjusted, self.card_need_rule,
+                     self.card_need_diff, self.card_need_adj, self.card_unresolved]:
             summary_layout.addWidget(card)
 
         action_group = QGroupBox('操作')
@@ -113,13 +118,14 @@ class ConfirmWindow(QWidget):
         table_group = QGroupBox('复核清单')
         table_layout = QVBoxLayout(table_group)
         self.table = QTableWidget()
-        self.table.setColumnCount(10)
+        self.table.setColumnCount(14)
         self.table.setHorizontalHeaderLabels([
             '员工编号', '姓名', '部门', '实发工资', '上月实发', '波动额',
+            '规则检查', '差异核对', '调整复核', '未解决问题数',
             '问题数', '调整次数', '状态', '确认时间'
         ])
-        for i in range(10):
-            if i in [3, 4, 5, 9]:
+        for i in range(14):
+            if i in [3, 4, 5, 13]:
                 self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
             else:
                 self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
@@ -140,6 +146,16 @@ class ConfirmWindow(QWidget):
 
         layout.addLayout(top_layout)
         layout.addWidget(table_group, stretch=1)
+
+        self.status_bar = QStatusBar()
+        self.status_bar.setStyleSheet(
+            'background: #f8f9fa; border-top: 1px solid #dee2e6; '
+            'font-size: 12px; color: #495057;'
+        )
+        self.status_label = QLabel('')
+        self.status_label.setStyleSheet('padding: 2px 8px;')
+        self.status_bar.addWidget(self.status_label)
+        layout.addWidget(self.status_bar)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -186,9 +202,14 @@ class ConfirmWindow(QWidget):
 
     def _update_summary(self):
         records = self.store.get_all_records()
-        total = len(records)
-        confirmed = self.store.get_confirmed_count()
-        unfinished = self.store.get_unfinished_count()
+        summary = self.store.get_unfinished_review_summary()
+        total = summary['total']
+        confirmed = summary['locked']
+        unfinished = summary['unlocked']
+        need_rule = summary['need_rule_check']
+        need_diff = summary['need_diff_check']
+        need_adj = summary['need_adjustment_review']
+        has_issues = summary['has_unresolved_issues']
         with_issues = sum(1 for r in records if r.issues and not r.is_locked)
         adjusted = sum(1 for r in records if r.adjustments)
 
@@ -197,18 +218,40 @@ class ConfirmWindow(QWidget):
         self.card_unfinished.value_label.setText(str(unfinished))
         self.card_issues.value_label.setText(str(with_issues))
         self.card_adjusted.value_label.setText(str(adjusted))
+        self.card_need_rule.value_label.setText(str(need_rule))
+        self.card_need_diff.value_label.setText(str(need_diff))
+        self.card_need_adj.value_label.setText(str(need_adj))
+        self.card_unresolved.value_label.setText(str(has_issues))
 
-        if unfinished > 0 or with_issues > 0:
+        all_unfinished = need_rule + need_diff + need_adj + has_issues
+        if all_unfinished > 0:
             parts = []
-            if with_issues > 0:
-                parts.append(f'{with_issues} 人仍有异常问题待处理')
-            if unfinished > 0:
-                parts.append(f'{unfinished} 人尚未确认锁定')
+            if need_rule > 0:
+                parts.append(f'{need_rule} 人未完成规则检查')
+            if need_diff > 0:
+                parts.append(f'{need_diff} 人未完成差异核对')
+            if need_adj > 0:
+                parts.append(f'{need_adj} 人未完成调整复核')
+            if has_issues > 0:
+                parts.append(f'{has_issues} 人有未解决问题')
             self.alert_label.setText('⚠ ' + '；'.join(parts) + '，请在发薪前完成全部复核！')
             self.alert_frame.show()
         else:
             self.alert_label.setText('')
             self.alert_frame.hide()
+
+        not_all_complete = sum(1 for r in records if not r.is_locked and not r.is_review_complete())
+        if not_all_complete > 0:
+            self.status_label.setText(f'还有 {not_all_complete} 人未完成全部复核，{has_issues} 人有未解决问题')
+            self.status_label.setStyleSheet('padding: 2px 8px; color: #c0392b; font-weight: bold;')
+        else:
+            unlocked_no_issues = sum(1 for r in records if not r.is_locked and r.is_review_complete() and not r.has_unresolved_issues())
+            if unlocked_no_issues > 0:
+                self.status_label.setText(f'所有复核已完成，还有 {unlocked_no_issues} 人待锁定确认')
+                self.status_label.setStyleSheet('padding: 2px 8px; color: #e67e22; font-weight: bold;')
+            else:
+                self.status_label.setText('全部人员已完成复核并锁定')
+                self.status_label.setStyleSheet('padding: 2px 8px; color: #27ae60; font-weight: bold;')
 
     def _populate_table(self):
         dept = self.cmb_dept.currentData() or '全部'
@@ -224,11 +267,20 @@ class ConfirmWindow(QWidget):
 
             confirm_time = r.confirm_time.strftime('%Y-%m-%d %H:%M:%S') if r.confirm_time else ''
 
+            rule_checked = r.review_steps.rule_checked
+            diff_checked = r.review_steps.diff_checked
+            adj_reviewed = r.review_steps.adjustment_reviewed
+            unresolved_count = len(r.get_unresolved_issues())
+
             values = [
                 r.emp_id, r.name, r.department,
                 f'{s.net_salary:.2f}',
                 f'{last_net:.2f}' if last else '-',
                 f'{diff:+.2f}' if last else '-',
+                '✓ 已完成' if rule_checked else '✗ 未完成',
+                '✓ 已完成' if diff_checked else '✗ 未完成',
+                '✓ 已完成' if adj_reviewed else '✗ 未完成',
+                str(unresolved_count),
                 str(len(r.issues)),
                 str(len(r.adjustments)),
                 r.status.value,
@@ -239,7 +291,7 @@ class ConfirmWindow(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 if r.is_locked:
                     item.setBackground(QBrush(QColor('#d5f5e3')))
-                    if col == 8:
+                    if col == 12:
                         item.setForeground(QBrush(QColor('#27ae60')))
                         font = item.font()
                         font.setBold(True)
@@ -247,7 +299,27 @@ class ConfirmWindow(QWidget):
                 else:
                     if r.issues:
                         item.setBackground(QBrush(QColor('#fdebd0')))
-                    if col == 6 and len(r.issues) > 0:
+                    if col in [6, 7, 8]:
+                        if (col == 6 and not rule_checked) or \
+                           (col == 7 and not diff_checked) or \
+                           (col == 8 and not adj_reviewed):
+                            item.setBackground(QBrush(QColor('#fadbd8')))
+                            item.setForeground(QBrush(QColor('#c0392b')))
+                            font = item.font()
+                            font.setBold(True)
+                            item.setFont(font)
+                        else:
+                            item.setForeground(QBrush(QColor('#27ae60')))
+                            font = item.font()
+                            font.setBold(True)
+                            item.setFont(font)
+                    if col == 9 and unresolved_count > 0:
+                        item.setBackground(QBrush(QColor('#fadbd8')))
+                        item.setForeground(QBrush(QColor('#c0392b')))
+                        font = item.font()
+                        font.setBold(True)
+                        item.setFont(font)
+                    if col == 10 and len(r.issues) > 0:
                         item.setForeground(QBrush(QColor('#c0392b')))
                         font = item.font()
                         font.setBold(True)
@@ -265,48 +337,178 @@ class ConfirmWindow(QWidget):
         if not rows:
             QMessageBox.information(self, '提示', '请先在表格中选择员工（可按住Ctrl多选）')
             return
-        count = 0
-        for row in rows:
-            emp_id = self.table.item(row, 0).data(Qt.UserRole)
-            if not emp_id:
-                continue
-            if lock:
-                if self.store.lock_record(emp_id):
-                    count += 1
+
+        if lock:
+            success_count = 0
+            skipped_count = 0
+            errors = []
+            skipped = []
+
+            for row in rows:
+                emp_id = self.table.item(row, 0).data(Qt.UserRole)
+                if not emp_id:
+                    continue
+                record = self.store.get_record(emp_id)
+                if not record:
+                    continue
+                if record.is_locked:
+                    skipped_count += 1
+                    skipped.append(f'{record.name} ({emp_id}) 已是锁定状态')
+                    continue
+                ok, msg = self.store.lock_record(emp_id, check_review=True)
+                if ok:
+                    success_count += 1
+                else:
+                    errors.append(msg)
+
+            msg_parts = []
+            if success_count > 0:
+                msg_parts.append(f'成功锁定 {success_count} 人')
+            if skipped_count > 0:
+                msg_parts.append(f'跳过 {skipped_count} 人（已是锁定状态）')
+            if errors:
+                msg_parts.append(f'失败 {len(errors)} 人：')
+                msg_parts.extend([f'  - {e}' for e in errors])
+            if skipped:
+                msg_parts.append('跳过详情：')
+                msg_parts.extend([f'  - {s}' for s in skipped])
+
+            if success_count > 0 and not errors:
+                QMessageBox.information(self, '完成', '\n'.join(msg_parts))
+            elif errors:
+                QMessageBox.warning(self, '部分失败', '\n'.join(msg_parts))
             else:
-                if self.store.unlock_record(emp_id):
-                    count += 1
-        action = '锁定' if lock else '取消锁定'
-        QMessageBox.information(self, '完成', f'已{action} {count} 人')
+                QMessageBox.information(self, '提示', '\n'.join(msg_parts))
+
+        else:
+            reason, ok = QInputDialog.getText(
+                self, '取消锁定', '请输入取消锁定的原因：',
+                text=''
+            )
+            if not ok:
+                return
+            reason = reason.strip()
+            if not reason:
+                QMessageBox.warning(self, '提示', '请输入取消锁定的原因')
+                return
+
+            success_count = 0
+            skipped_count = 0
+            errors = []
+            skipped = []
+
+            for row in rows:
+                emp_id = self.table.item(row, 0).data(Qt.UserRole)
+                if not emp_id:
+                    continue
+                record = self.store.get_record(emp_id)
+                if not record:
+                    continue
+                if not record.is_locked:
+                    skipped_count += 1
+                    skipped.append(f'{record.name} ({emp_id}) 未处于锁定状态')
+                    continue
+                ok_unlock, msg = self.store.unlock_record(emp_id, reason)
+                if ok_unlock:
+                    success_count += 1
+                else:
+                    errors.append(msg)
+
+            msg_parts = []
+            if success_count > 0:
+                msg_parts.append(f'成功取消锁定 {success_count} 人')
+            if skipped_count > 0:
+                msg_parts.append(f'跳过 {skipped_count} 人（未锁定）')
+            if errors:
+                msg_parts.append(f'失败 {len(errors)} 人：')
+                msg_parts.extend([f'  - {e}' for e in errors])
+            if skipped:
+                msg_parts.append('跳过详情：')
+                msg_parts.extend([f'  - {s}' for s in skipped])
+
+            if success_count > 0 and not errors:
+                QMessageBox.information(self, '完成', '\n'.join(msg_parts))
+            elif errors:
+                QMessageBox.warning(self, '部分失败', '\n'.join(msg_parts))
+            else:
+                QMessageBox.information(self, '提示', '\n'.join(msg_parts))
+
         self.refresh()
 
     def _confirm_all_clean(self):
         records = [r for r in self.store.get_all_records() if not r.is_locked]
-        with_issues = [r for r in records if r.issues]
-        if with_issues:
-            reply = QMessageBox.question(
-                self, '确认',
-                f'仍有 {len(with_issues)} 人存在异常问题，是否仅确认无问题的人员？\n'
-                '点击"是"仅确认无问题人员，点击"否"取消',
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
-            records = [r for r in records if not r.issues]
-        else:
-            reply = QMessageBox.question(
-                self, '确认',
-                f'将锁定所有 {len(records)} 个待处理人员，确认继续？',
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
 
-        count = 0
+        ready_count = 0
+        skip_reasons = {}
+
         for r in records:
-            if self.store.lock_record(r.emp_id):
-                count += 1
-        QMessageBox.information(self, '完成', f'已批量确认并锁定 {count} 人')
+            reasons = []
+            if not r.review_steps.rule_checked:
+                reasons.append('未完成规则检查')
+            if not r.review_steps.diff_checked:
+                reasons.append('未完成差异核对')
+            if not r.review_steps.adjustment_reviewed:
+                reasons.append('未完成调整复核')
+            if r.has_unresolved_issues():
+                reasons.append('有未解决问题')
+
+            if reasons:
+                skip_reasons[f'{r.name} ({r.emp_id})'] = reasons
+            else:
+                ready_count += 1
+
+        if ready_count == 0:
+            msg_parts = ['没有符合条件的人员可以锁定。']
+            if skip_reasons:
+                msg_parts.append(f'共 {len(skip_reasons)} 人不满足锁定条件：')
+                for name, reasons in skip_reasons.items():
+                    msg_parts.append(f'  - {name}: {"、".join(reasons)}')
+            QMessageBox.warning(self, '无法锁定', '\n'.join(msg_parts))
+            return
+
+        msg_parts = [
+            f'将锁定 {ready_count} 名满足条件的人员（所有复核步骤完成、无未解决问题）。',
+            f'跳过 {len(skip_reasons)} 名不满足条件的人员。'
+        ]
+        if skip_reasons:
+            msg_parts.append('跳过详情：')
+            for name, reasons in list(skip_reasons.items())[:10]:
+                msg_parts.append(f'  - {name}: {"、".join(reasons)}')
+            if len(skip_reasons) > 10:
+                msg_parts.append(f'  ... 还有 {len(skip_reasons) - 10} 人')
+
+        reply = QMessageBox.question(
+            self, '确认',
+            '\n'.join(msg_parts) + '\n\n是否继续？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success_count = 0
+        errors = []
+
+        for r in records:
+            if f'{r.name} ({r.emp_id})' in skip_reasons:
+                continue
+            ok, msg = self.store.lock_record(r.emp_id, check_review=True)
+            if ok:
+                success_count += 1
+            else:
+                errors.append(msg)
+
+        result_parts = [f'成功锁定 {success_count} 人']
+        if len(skip_reasons) > 0:
+            result_parts.append(f'跳过 {len(skip_reasons)} 人（不满足锁定条件）')
+        if errors:
+            result_parts.append(f'失败 {len(errors)} 人：')
+            result_parts.extend([f'  - {e}' for e in errors])
+
+        if errors:
+            QMessageBox.warning(self, '部分失败', '\n'.join(result_parts))
+        else:
+            QMessageBox.information(self, '完成', '\n'.join(result_parts))
+
         self.refresh()
 
     def _export(self, export_type: str):

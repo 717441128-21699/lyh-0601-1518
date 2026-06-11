@@ -98,10 +98,13 @@ class ImportWindow(QWidget):
             return
 
         if file_type == 'salary':
-            imported, skipped, errors = import_salary_excel(file_path)
-            self._log(f'[工资表] 成功导入 {imported} 条，跳过 {skipped} 条')
+            imported, skipped, errors, warnings = import_salary_excel(file_path)
+            self._log(f'[工资表] 成功导入 {imported} 条，跳过锁定 {skipped} 人')
             if errors:
-                self._log('⚠ ' + '; '.join(errors))
+                self._log('⚠ 错误: ' + '; '.join(errors))
+            if warnings:
+                for w in warnings:
+                    self._log('⚠ ' + w)
             if imported > 0:
                 self.lbl_salary.setText(f'工资表: 已导入 ({imported}人)')
                 self.lbl_salary.setStyleSheet('font-size: 13px; padding: 4px 12px; color: #27ae60; font-weight: bold;')
@@ -110,10 +113,13 @@ class ImportWindow(QWidget):
             if not self.store.import_status['salary']:
                 QMessageBox.warning(self, '提示', '请先导入工资表，再导入考勤表以便按员工编号匹配。')
                 return
-            matched, mismatched, errors = import_attendance_excel(file_path)
+            matched, mismatched, errors, warnings = import_attendance_excel(file_path)
             self._log(f'[考勤表] 匹配 {matched} 人，未匹配 {mismatched} 人')
             if errors:
-                self._log('⚠ ' + '; '.join(errors))
+                self._log('⚠ 错误: ' + '; '.join(errors))
+            if warnings:
+                for w in warnings:
+                    self._log('⚠ ' + w)
             if matched > 0:
                 self.lbl_attendance.setText(f'考勤表: 已导入 ({matched}人匹配)')
                 self.lbl_attendance.setStyleSheet('font-size: 13px; padding: 4px 12px; color: #27ae60; font-weight: bold;')
@@ -122,10 +128,13 @@ class ImportWindow(QWidget):
             if not self.store.import_status['salary']:
                 QMessageBox.warning(self, '提示', '请先导入本月工资表，再导入上月工资表进行对比。')
                 return
-            matched, mismatched, errors = import_last_month_salary(file_path)
+            matched, mismatched, errors, warnings = import_last_month_salary(file_path)
             self._log(f'[上月工资] 匹配 {matched} 人，{mismatched} 人本月未出现')
             if errors:
-                self._log('⚠ ' + '; '.join(errors))
+                self._log('⚠ 错误: ' + '; '.join(errors))
+            if warnings:
+                for w in warnings:
+                    self._log('⚠ ' + w)
             if matched > 0:
                 self.lbl_last.setText(f'上月工资: 已导入 ({matched}人匹配)')
                 self.lbl_last.setStyleSheet('font-size: 13px; padding: 4px 12px; color: #27ae60; font-weight: bold;')

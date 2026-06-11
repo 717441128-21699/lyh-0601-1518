@@ -1,12 +1,13 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QComboBox, QLineEdit,
-    QMessageBox, QSplitter, QTextEdit, QFormLayout, QDoubleSpinBox
+    QMessageBox, QSplitter, QTextEdit, QFormLayout, QDoubleSpinBox, QInputDialog
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtGui import QColor, QBrush, QIcon
 
 from models.data_store import DataStore
+from models.data_models import OperationType
 from services.rule_checker import FIELD_NAMES_CN
 
 
@@ -18,6 +19,17 @@ FIELD_OPTIONS = [
     ('housing_fund', '公积金'),
     ('personal_tax', '个税'),
     ('other_deduction', '其他扣款'),
+]
+
+OPERATION_TYPE_FILTERS = [
+    ('all', '全部操作类型'),
+    ('ADJUSTMENT', '金额调整'),
+    ('LOCK', '锁定确认'),
+    ('UNLOCK', '取消锁定'),
+    ('RULE_CHECKED', '规则检查'),
+    ('DIFF_CHECKED', '差异核对'),
+    ('ADJUSTMENT_REVIEWED', '调整复核'),
+    ('ISSUE_RESOLVED', '问题解决'),
 ]
 
 
@@ -89,12 +101,41 @@ class AdjustmentWindow(QWidget):
         )
         self.btn_save.clicked.connect(self._save_adjustment)
 
+        self.btn_unlock = QPushButton('取消锁定')
+        self.btn_unlock.setMinimumHeight(38)
+        self.btn_unlock.setStyleSheet(
+            'font-size: 14px; font-weight: bold; padding: 6px 20px; '
+            'background: #e67e22; color: white; border-radius: 4px;'
+        )
+        self.btn_unlock.clicked.connect(self._unlock_record)
+        self.btn_unlock.setVisible(False)
+
+        self.btn_mark_reviewed = QPushButton('标记调整复核完成')
+        self.btn_mark_reviewed.setMinimumHeight(38)
+        self.btn_mark_reviewed.setStyleSheet(
+            'font-size: 14px; font-weight: bold; padding: 6px 20px; '
+            'background: #3498db; color: white; border-radius: 4px;'
+        )
+        self.btn_mark_reviewed.clicked.connect(self._mark_adjustment_reviewed)
+
         btn_row.addStretch()
+        btn_row.addWidget(self.btn_unlock)
+        btn_row.addWidget(self.btn_mark_reviewed)
         btn_row.addWidget(self.btn_save)
         input_layout.addLayout(btn_row)
 
         emp_detail_group = QGroupBox('员工当前工资明细')
         emp_detail_layout = QVBoxLayout(emp_detail_group)
+
+        self.lbl_lock_status = QLabel('')
+        self.lbl_lock_status.setStyleSheet(
+            'font-weight: bold; padding: 8px; border-radius: 4px; '
+            'background: #fdebd0; color: #e67e22; text-align: center;'
+        )
+        self.lbl_lock_status.setAlignment(Qt.AlignCenter)
+        self.lbl_lock_status.setVisible(False)
+        emp_detail_layout.addWidget(self.lbl_lock_status)
+
         self.emp_detail_table = QTableWidget()
         self.emp_detail_table.setColumnCount(2)
         self.emp_detail_table.setHorizontalHeaderLabels(['项目', '金额'])
@@ -111,16 +152,23 @@ class AdjustmentWindow(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
-        hist_group = QGroupBox('所有调整记录（修改痕迹）')
+        hist_group = QGroupBox('操作日志')
         hist_layout = QVBoxLayout(hist_group)
 
         filter_row = QHBoxLayout()
-        self.chk_only_current = QComboBox()
-        self.chk_only_current.addItem('全部员工', 'all')
-        self.chk_only_current.addItem('仅选中员工', 'current')
-        self.chk_only_current.currentIndexChanged.connect(self._populate_history)
-        filter_row.addWidget(QLabel('筛选:'))
-        filter_row.addWidget(self.chk_only_current)
+        filter_row.addWidget(QLabel('操作类型:'))
+        self.cmb_op_type = QComboBox()
+        for key, label in OPERATION_TYPE_FILTERS:
+            self.cmb_op_type.addItem(label, key)
+        self.cmb_op_type.currentIndexChanged.connect(self._populate_history)
+        filter_row.addWidget(self.cmb_op_type)
+
+        filter_row.addWidget(QLabel('员工:'))
+        self.cmb_log_emp = QComboBox()
+        self.cmb_log_emp.addItem('全部员工', 'all')
+        self.cmb_log_emp.currentIndexChanged.connect(self._populate_history)
+        filter_row.addWidget(self.cmb_log_emp)
+
         filter_row.addStretch()
         self.lbl_count = QLabel('共 0 条记录')
         self.lbl_count.setStyleSheet('font-weight: bold; padding: 4px 8px;')
@@ -128,12 +176,12 @@ class AdjustmentWindow(QWidget):
         hist_layout.addLayout(filter_row)
 
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(8)
+        self.history_table.setColumnCount(6)
         self.history_table.setHorizontalHeaderLabels([
-            '时间', '员工编号', '姓名', '调整字段', '原值', '新值', '差额', '原因'
+            '时间', '操作类型', '员工编号', '姓名', '操作详情', '操作人'
         ])
-        for i in range(8):
-            if i in [6, 7]:
+        for i in range(6):
+            if i in [4]:
                 self.history_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
             else:
                 self.history_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
@@ -151,6 +199,7 @@ class AdjustmentWindow(QWidget):
 
     def refresh(self):
         self._reload_employees()
+        self._reload_log_employees()
         self._populate_history()
 
     def _reload_employees(self):
@@ -159,9 +208,18 @@ class AdjustmentWindow(QWidget):
         self.cmb_emp.clear()
         for r in self.store.get_all_records():
             label = f'{r.emp_id} - {r.name} ({r.department})'
+            prefix = ''
             if r.is_locked:
-                label += ' [已锁定]'
+                prefix = '🔒 '
+                label = prefix + label
+            elif r.has_unresolved_issues():
+                prefix = '⚠ '
+                label = prefix + label
+
             self.cmb_emp.addItem(label, r.emp_id)
+            idx = self.cmb_emp.count() - 1
+            if r.is_locked:
+                self.cmb_emp.setItemData(idx, QColor('#7f8c8d'), Qt.ForegroundRole)
         if current:
             idx = self.cmb_emp.findData(current)
             if idx >= 0:
@@ -169,12 +227,29 @@ class AdjustmentWindow(QWidget):
         self.cmb_emp.blockSignals(False)
         self._on_emp_changed()
 
+    def _reload_log_employees(self):
+        current = self.cmb_log_emp.currentData()
+        self.cmb_log_emp.blockSignals(True)
+        self.cmb_log_emp.clear()
+        self.cmb_log_emp.addItem('全部员工', 'all')
+        for r in self.store.get_all_records():
+            label = f'{r.emp_id} - {r.name}'
+            self.cmb_log_emp.addItem(label, r.emp_id)
+        if current:
+            idx = self.cmb_log_emp.findData(current)
+            if idx >= 0:
+                self.cmb_log_emp.setCurrentIndex(idx)
+        self.cmb_log_emp.blockSignals(False)
+
     def _on_emp_changed(self):
         emp_id = self.cmb_emp.currentData()
         if not emp_id:
             self.lbl_old.setText('-')
             self.lbl_diff.setText('')
             self.emp_detail_table.setRowCount(0)
+            self.btn_unlock.setVisible(False)
+            self.btn_mark_reviewed.setEnabled(True)
+            self.lbl_lock_status.setVisible(False)
             return
         record = self.store.get_record(emp_id)
         if record and record.is_locked:
@@ -184,6 +259,10 @@ class AdjustmentWindow(QWidget):
                 'font-size: 14px; font-weight: bold; padding: 6px 20px; '
                 'background: #95a5a6; color: white; border-radius: 4px;'
             )
+            self.btn_unlock.setVisible(True)
+            self.btn_mark_reviewed.setEnabled(False)
+            self.lbl_lock_status.setText('🔒 该员工已锁定，数据不可修改')
+            self.lbl_lock_status.setVisible(True)
         else:
             self.btn_save.setEnabled(True)
             self.btn_save.setText('保存调整')
@@ -191,6 +270,9 @@ class AdjustmentWindow(QWidget):
                 'font-size: 14px; font-weight: bold; padding: 6px 20px; '
                 'background: #27ae60; color: white; border-radius: 4px;'
             )
+            self.btn_unlock.setVisible(False)
+            self.btn_mark_reviewed.setEnabled(True)
+            self.lbl_lock_status.setVisible(False)
         self._on_field_changed()
         self._show_emp_detail(emp_id)
 
@@ -276,7 +358,7 @@ class AdjustmentWindow(QWidget):
             QMessageBox.information(self, '提示', '新值与原值相同，无需调整')
             return
 
-        ok = self.store.adjust_salary_field(emp_id, field, new_val, reason)
+        ok, msg = self.store.adjust_salary_field(emp_id, field, new_val, reason)
         if ok:
             field_label = self.cmb_field.currentText()
             QMessageBox.information(
@@ -285,46 +367,112 @@ class AdjustmentWindow(QWidget):
                 f'{old:.2f} → {new_val:.2f} (差额 {new_val - float(old):+.2f})'
             )
             self.txt_reason.clear()
-            self._on_emp_changed()
+            self._reload_employees()
             self._populate_history()
         else:
-            QMessageBox.critical(self, '错误', '调整失败，请重试')
+            QMessageBox.critical(self, '错误', msg or '调整失败，请重试')
+
+    def _unlock_record(self):
+        emp_id = self.cmb_emp.currentData()
+        if not emp_id:
+            QMessageBox.warning(self, '提示', '请选择员工')
+            return
+        record = self.store.get_record(emp_id)
+        if not record or not record.is_locked:
+            return
+
+        reason, ok = QInputDialog.getText(
+            self, '取消锁定', '请输入取消锁定原因:', QLineEdit.Normal, ''
+        )
+        if not ok:
+            return
+        reason = reason.strip()
+        if not reason:
+            QMessageBox.warning(self, '提示', '请填写取消锁定原因')
+            return
+
+        ok, msg = self.store.unlock_record(emp_id, reason)
+        if ok:
+            QMessageBox.information(self, '成功', f'{record.name} 已取消锁定')
+            self._reload_employees()
+            self._populate_history()
+        else:
+            QMessageBox.critical(self, '错误', msg or '取消锁定失败')
+
+    def _mark_adjustment_reviewed(self):
+        emp_id = self.cmb_emp.currentData()
+        if not emp_id:
+            QMessageBox.warning(self, '提示', '请选择员工')
+            return
+        record = self.store.get_record(emp_id)
+        if not record:
+            return
+        if record.is_locked:
+            QMessageBox.warning(self, '提示', '该员工已锁定')
+            return
+
+        reply = QMessageBox.question(
+            self, '确认', f'确定要标记 {record.name} 的调整复核完成吗？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        ok, msg = self.store.mark_adjustment_reviewed(emp_id)
+        if ok:
+            QMessageBox.information(self, '成功', f'{record.name} 调整复核已标记完成')
+            self._populate_history()
+        else:
+            QMessageBox.critical(self, '错误', msg or '操作失败')
 
     def _populate_history(self):
-        filter_mode = self.chk_only_current.currentData()
-        selected_emp = self.cmb_emp.currentData()
-        adjustments = self.store.get_adjustments()
+        op_type_filter = self.cmb_op_type.currentData()
+        emp_filter = self.cmb_log_emp.currentData()
 
-        if filter_mode == 'current' and selected_emp:
-            adjustments = [a for a in adjustments if a.emp_id == selected_emp]
+        logs = self.store.get_operation_logs()
 
-        adjustments = sorted(adjustments, key=lambda x: x.adjust_time, reverse=True)
+        if op_type_filter and op_type_filter != 'all':
+            try:
+                filter_enum = OperationType[op_type_filter]
+                logs = [l for l in logs if l.operation_type == filter_enum]
+            except (KeyError, ValueError):
+                pass
 
-        self.history_table.setRowCount(len(adjustments))
-        for row, a in enumerate(adjustments):
-            diff = round(a.new_value - a.old_value, 2)
-            field_label = FIELD_NAMES_CN.get(a.field_name, a.field_name)
+        if emp_filter and emp_filter != 'all':
+            logs = [l for l in logs if l.emp_id == emp_filter]
+
+        logs = sorted(logs, key=lambda x: x.operate_time, reverse=True)
+
+        self.history_table.setRowCount(len(logs))
+        for row, log in enumerate(logs):
             values = [
-                a.adjust_time.strftime('%Y-%m-%d %H:%M:%S'),
-                a.emp_id, a.name, field_label,
-                f'{a.old_value:.2f}', f'{a.new_value:.2f}',
-                f'{diff:+.2f}', a.reason
+                log.operate_time.strftime('%Y-%m-%d %H:%M:%S'),
+                log.operation_type.value,
+                log.emp_id,
+                log.name,
+                log.detail,
+                log.operator,
             ]
             for col, v in enumerate(values):
                 item = QTableWidgetItem(str(v))
-                if col == 6:
+                if col == 1:
                     item.setTextAlignment(Qt.AlignCenter)
-                    if diff > 0:
+                    op_type_name = log.operation_type
+                    if op_type_name == OperationType.LOCK:
+                        item.setForeground(QBrush(QColor('#e74c3c')))
+                    elif op_type_name == OperationType.UNLOCK:
+                        item.setForeground(QBrush(QColor('#f39c12')))
+                    elif op_type_name == OperationType.ADJUSTMENT:
                         item.setForeground(QBrush(QColor('#27ae60')))
-                    elif diff < 0:
-                        item.setForeground(QBrush(QColor('#c0392b')))
+                    elif op_type_name in [OperationType.RULE_CHECKED, OperationType.DIFF_CHECKED, OperationType.ADJUSTMENT_REVIEWED]:
+                        item.setForeground(QBrush(QColor('#3498db')))
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
-                elif col in [4, 5]:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                elif col == 4:
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 else:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.history_table.setItem(row, col, item)
 
-        self.lbl_count.setText(f'共 {len(adjustments)} 条记录')
+        self.lbl_count.setText(f'共 {len(logs)} 条记录')

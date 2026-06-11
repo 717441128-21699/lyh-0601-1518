@@ -6,7 +6,8 @@ from datetime import datetime
 from models.data_store import DataStore
 from models.data_models import (
     Employee, SalaryRecord, SalaryData,
-    AttendanceData, SalaryStatus
+    AttendanceData, SalaryStatus, OperationType,
+    IssueItem
 )
 
 
@@ -73,39 +74,47 @@ def _safe_str(val) -> str:
         return ''
 
 
-def import_salary_excel(file_path: str) -> Tuple[int, int, List[str]]:
+def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, List[str], List[str]]:
     if not os.path.exists(file_path):
-        return 0, 0, ['文件不存在']
+        return 0, 0, ['文件不存在'], []
 
     store = DataStore()
     errors: List[str] = []
+    warnings: List[str] = []
     imported = 0
-    skipped = 0
+    skipped_locked = 0
+
+    locked_names: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
     except Exception as e:
-        return 0, 0, [f'读取Excel失败: {str(e)}']
+        return 0, 0, [f'读取Excel失败: {str(e)}'], []
 
     if df.empty:
-        return 0, 0, ['Excel文件为空']
+        return 0, 0, ['Excel文件为空'], []
 
     col_mapping = _map_columns(df.columns.tolist(), SALARY_COLUMN_MAP)
 
     if 'emp_id' not in col_mapping.values():
-        return 0, 0, ['未找到"员工编号"或"工号"列']
+        return 0, 0, ['未找到"员工编号"或"工号"列'], []
 
     reverse_map = {v: k for k, v in col_mapping.items()}
 
     for idx, row in df.iterrows():
         emp_id = _safe_str(row.get(reverse_map.get('emp_id', ''), ''))
         if not emp_id:
-            skipped += 1
             continue
 
         name = _safe_str(row.get(reverse_map.get('name', ''), ''))
         department = _safe_str(row.get(reverse_map.get('department', ''), ''))
         position = _safe_str(row.get(reverse_map.get('position', ''), ''))
+
+        existing = store.get_record(emp_id)
+        if existing and existing.is_locked and not force:
+            skipped_locked += 1
+            locked_names.append(f'{existing.name}({emp_id})')
+            continue
 
         salary = SalaryData(
             emp_id=emp_id,
@@ -134,46 +143,69 @@ def import_salary_excel(file_path: str) -> Tuple[int, int, List[str]]:
         emp = Employee(emp_id=emp_id, name=name, department=department, position=position)
         store.add_employee(emp)
 
-        existing = store.get_record(emp_id)
         if existing:
+            old_salary = existing.salary
             existing.name = name or existing.name
             existing.department = department or existing.department
             existing.position = position or existing.position
             existing.salary = salary
+            existing.issues = []
+            existing.issue_messages = []
+            existing.review_steps.rule_checked = False
+            existing.review_steps.diff_checked = False
+            existing.status = SalaryStatus.PENDING
+            existing.confirm_time = None
+            store._log_operation(
+                OperationType.DATA_IMPORTED, emp_id, existing.name,
+                f'重新导入工资数据，原应发{old_salary.gross_salary:.2f}→新应发{salary.gross_salary:.2f}'
+            )
         else:
             record = SalaryRecord(
                 emp_id=emp_id, name=name, department=department,
                 position=position, salary=salary, status=SalaryStatus.PENDING
             )
-            store.add_or_update_record(record)
+            store.add_or_update_record(record, check_lock=False)
+            store._log_operation(
+                OperationType.DATA_IMPORTED, emp_id, name,
+                '首次导入工资数据'
+            )
 
         imported += 1
 
     store.import_status['salary'] = True
-    return imported, skipped, errors
+
+    if skipped_locked > 0:
+        show_names = ', '.join(locked_names[:5])
+        if len(locked_names) > 5:
+            show_names += f' 等{len(locked_names)}人'
+        warnings.append(f'已跳过 {skipped_locked} 名已锁定人员（{show_names}），如需更新请先取消锁定')
+
+    return imported, skipped_locked, errors, warnings
 
 
-def import_attendance_excel(file_path: str) -> Tuple[int, int, List[str]]:
+def import_attendance_excel(file_path: str) -> Tuple[int, int, List[str], List[str]]:
     if not os.path.exists(file_path):
-        return 0, 0, ['文件不存在']
+        return 0, 0, ['文件不存在'], []
 
     store = DataStore()
     errors: List[str] = []
+    warnings: List[str] = []
     matched = 0
+    skipped_locked = 0
     mismatched: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
     except Exception as e:
-        return 0, 0, [f'读取Excel失败: {str(e)}']
+        return 0, 0, [f'读取Excel失败: {str(e)}'], []
 
     if df.empty:
-        return 0, 0, ['Excel文件为空']
+        return 0, 0, ['Excel文件为空'], []
 
     col_mapping = _map_columns(df.columns.tolist(), ATTENDANCE_COLUMN_MAP)
 
     if 'emp_id' not in col_mapping.values():
-        return 0, 0, ['未找到"员工编号"或"工号"列']
+        return 0, 0, ['未找到"员工编号"或"工号"列'], []
 
     reverse_map = {v: k for k, v in col_mapping.items()}
 
@@ -194,40 +226,48 @@ def import_attendance_excel(file_path: str) -> Tuple[int, int, List[str]]:
 
         record = store.get_record(emp_id)
         if record:
+            if record.is_locked:
+                skipped_locked += 1
+                continue
             record.attendance = attendance
             matched += 1
         else:
             mismatched.append(emp_id)
 
     store.import_status['attendance'] = True
+
+    if skipped_locked > 0:
+        warnings.append(f'已跳过 {skipped_locked} 名已锁定人员的考勤数据更新')
+
     if mismatched:
         errors.append(f'未匹配到工资表的员工编号: {", ".join(mismatched[:10])}')
         if len(mismatched) > 10:
             errors.append(f'... 还有 {len(mismatched) - 10} 人未匹配')
-    return matched, len(mismatched), errors
+    return matched, len(mismatched), errors, warnings
 
 
-def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str]]:
+def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str], List[str]]:
     if not os.path.exists(file_path):
-        return 0, 0, ['文件不存在']
+        return 0, 0, ['文件不存在'], []
 
     store = DataStore()
     errors: List[str] = []
+    warnings: List[str] = []
     matched = 0
     mismatched: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
     except Exception as e:
-        return 0, 0, [f'读取Excel失败: {str(e)}']
+        return 0, 0, [f'读取Excel失败: {str(e)}'], []
 
     if df.empty:
-        return 0, 0, ['Excel文件为空']
+        return 0, 0, ['Excel文件为空'], []
 
     col_mapping = _map_columns(df.columns.tolist(), SALARY_COLUMN_MAP)
 
     if 'emp_id' not in col_mapping.values():
-        return 0, 0, ['未找到"员工编号"或"工号"列']
+        return 0, 0, ['未找到"员工编号"或"工号"列'], []
 
     reverse_map = {v: k for k, v in col_mapping.items()}
 
@@ -263,6 +303,7 @@ def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str]]:
         record = store.get_record(emp_id)
         if record:
             record.last_month_salary = last_salary
+            record.review_steps.diff_checked = False
             matched += 1
         else:
             mismatched.append(emp_id)
@@ -272,7 +313,7 @@ def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str]]:
     store.import_status['last_month'] = True
     if mismatched:
         errors.append(f'上月工资表中未在本月出现的员工: {", ".join(mismatched[:10])}')
-    return matched, len(mismatched), errors
+    return matched, len(mismatched), errors, warnings
 
 
 def export_final_salary(file_path: str) -> Tuple[bool, str]:
@@ -285,6 +326,7 @@ def export_final_salary(file_path: str) -> Tuple[bool, str]:
     data = []
     for r in records:
         s = r.salary
+        steps = r.review_steps
         data.append({
             '员工编号': r.emp_id,
             '姓名': r.name,
@@ -299,6 +341,9 @@ def export_final_salary(file_path: str) -> Tuple[bool, str]:
             '个税': s.personal_tax,
             '其他扣款': s.other_deduction,
             '实发工资': s.net_salary,
+            '规则检查': '已完成' if steps.rule_checked else '未完成',
+            '差异核对': '已完成' if steps.diff_checked else '未完成',
+            '调整复核': '已完成' if steps.adjustment_reviewed else '未完成',
             '状态': r.status.value,
             '是否锁定': '是' if r.is_locked else '否',
             '确认时间': r.confirm_time.strftime('%Y-%m-%d %H:%M:%S') if r.confirm_time else '',
@@ -321,21 +366,25 @@ def export_review_list(file_path: str) -> Tuple[bool, str]:
 
     data = []
     for r in records:
-        issues = '; '.join(r.issues) if r.issues else ''
-        adj_count = len(r.adjustments)
+        unresolved = [i.message for i in r.issues if not i.resolved]
+        issues = '; '.join(unresolved) if unresolved else '无'
+        adj_count = len([a for a in r.adjustments if a.operation_type == OperationType.ADJUSTMENT])
+        steps = r.get_unfinished_review_steps()
+        step_status = '全部完成' if not steps else '未完成: ' + '、'.join(steps)
+        last = r.last_month_salary
+        diff = round(r.salary.net_salary - last.net_salary, 2) if last else None
+
         data.append({
             '员工编号': r.emp_id,
             '姓名': r.name,
             '部门': r.department,
             '实发工资': r.salary.net_salary,
-            '上月实发': r.last_month_salary.net_salary if r.last_month_salary else '',
-            '波动额': (
-                r.salary.net_salary - r.last_month_salary.net_salary
-                if r.last_month_salary else ''
-            ),
-            '问题数量': len(r.issues),
+            '上月实发': last.net_salary if last else '',
+            '波动额': diff if diff is not None else '',
+            '未解决问题数': len(unresolved),
             '问题描述': issues,
             '调整次数': adj_count,
+            '复核状态': step_status,
             '状态': r.status.value,
             '是否锁定': '是' if r.is_locked else '否',
         })
@@ -350,28 +399,32 @@ def export_review_list(file_path: str) -> Tuple[bool, str]:
 
 def export_adjustments(file_path: str) -> Tuple[bool, str]:
     store = DataStore()
-    adjustments = store.get_adjustments()
+    from models.data_models import OperationType
+    adjustments = [l for l in store.get_operation_logs()
+                   if l.operation_type in (OperationType.ADJUSTMENT, OperationType.UNLOCK, OperationType.LOCK)]
 
     if not adjustments:
-        return False, '没有调整记录'
+        return False, '没有操作记录'
 
     data = []
     for a in adjustments:
+        diff = round(a.new_value - a.old_value, 2) if a.operation_type == OperationType.ADJUSTMENT else None
         data.append({
+            '操作类型': a.operation_type.value,
             '员工编号': a.emp_id,
             '姓名': a.name,
-            '调整字段': a.field_name,
-            '原值': a.old_value,
-            '新值': a.new_value,
-            '差额': round(a.new_value - a.old_value, 2),
-            '调整原因': a.reason,
+            '调整字段': a.field_name if a.field_name else '-',
+            '原值': a.old_value if a.operation_type == OperationType.ADJUSTMENT else '-',
+            '新值': a.new_value if a.operation_type == OperationType.ADJUSTMENT else '-',
+            '差额': diff if diff is not None else '-',
+            '操作详情': a.detail,
             '操作人': a.operator,
-            '调整时间': a.adjust_time.strftime('%Y-%m-%d %H:%M:%S'),
+            '操作时间': a.operate_time.strftime('%Y-%m-%d %H:%M:%S'),
         })
 
     df = pd.DataFrame(data)
     try:
-        df.to_excel(file_path, index=False, sheet_name='调整记录')
-        return True, f'成功导出 {len(adjustments)} 条调整记录'
+        df.to_excel(file_path, index=False, sheet_name='操作记录')
+        return True, f'成功导出 {len(adjustments)} 条操作记录'
     except Exception as e:
         return False, f'导出失败: {str(e)}'
