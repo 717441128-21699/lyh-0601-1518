@@ -13,6 +13,7 @@ from ui.rule_check_window import RuleCheckWindow
 from ui.diff_check_window import DiffCheckWindow
 from ui.adjustment_window import AdjustmentWindow
 from ui.confirm_window import ConfirmWindow
+from ui.audit_window import AuditWindow
 
 
 class MainWindow(QMainWindow):
@@ -71,12 +72,14 @@ class MainWindow(QMainWindow):
         self.diff_window = DiffCheckWindow()
         self.adjustment_window = AdjustmentWindow()
         self.confirm_window = ConfirmWindow()
+        self.audit_window = AuditWindow()
 
         self.tabs.addTab(self.import_window, '1. 数据导入')
         self.tabs.addTab(self.rule_window, '2. 规则检查')
         self.tabs.addTab(self.diff_window, '3. 差异核对')
         self.tabs.addTab(self.adjustment_window, '4. 调整记录')
         self.tabs.addTab(self.confirm_window, '5. 发薪确认')
+        self.tabs.addTab(self.audit_window, '6. 审计看板')
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -138,6 +141,9 @@ class MainWindow(QMainWindow):
             self.adjustment_window.refresh()
         elif index == 4:
             self.confirm_window.refresh()
+        elif index == 5:
+            self.audit_window.refresh()
+        self.store.set_ui_state('current_tab', index)
         self._update_status()
 
     def _update_status(self):
@@ -234,10 +240,16 @@ class MainWindow(QMainWindow):
         ok, msg = self.store.load_project(file_path)
         if ok:
             self._refresh_all_windows()
+            self._restore_ui_state()
             self._update_status()
             QMessageBox.information(self, '加载成功', msg)
         else:
             QMessageBox.critical(self, '加载失败', msg)
+
+    def _restore_ui_state(self):
+        current_tab = self.store.get_ui_state('current_tab', 0)
+        if 0 <= current_tab < self.tabs.count():
+            self.tabs.setCurrentIndex(current_tab)
 
     def _save_project(self) -> bool:
         if self.store.current_project_path:
@@ -283,7 +295,7 @@ class MainWindow(QMainWindow):
     def _refresh_all_windows(self):
         for w in [self.import_window, self.rule_window,
                   self.diff_window, self.adjustment_window,
-                  self.confirm_window]:
+                  self.confirm_window, self.audit_window]:
             w.refresh()
 
     def _clear_data(self):

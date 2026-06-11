@@ -267,7 +267,7 @@ class RuleCheckWindow(QWidget):
                 level_text += ' (已解决)'
             level_item = QTableWidgetItem(level_text)
             level_item.setTextAlignment(Qt.AlignCenter)
-            level_item.setData(Qt.UserRole, (emp_id, row))
+            level_item.setData(Qt.UserRole, (emp_id, issue.issue_id))
             if issue.resolved:
                 level_item.setBackground(QBrush(QColor('#d5f5e3')))
                 font = level_item.font()
@@ -281,7 +281,7 @@ class RuleCheckWindow(QWidget):
 
             cat_item = QTableWidgetItem(issue.category)
             cat_item.setTextAlignment(Qt.AlignCenter)
-            cat_item.setData(Qt.UserRole, (emp_id, row))
+            cat_item.setData(Qt.UserRole, (emp_id, issue.issue_id))
             if issue.resolved:
                 cat_item.setBackground(QBrush(QColor('#d5f5e3')))
                 font = cat_item.font()
@@ -293,7 +293,7 @@ class RuleCheckWindow(QWidget):
                 msg_text += f'\n备注: {issue.resolve_note}'
             msg_item = QTableWidgetItem(msg_text)
             msg_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            msg_item.setData(Qt.UserRole, (emp_id, row))
+            msg_item.setData(Qt.UserRole, (emp_id, issue.issue_id))
             if issue.resolved:
                 msg_item.setBackground(QBrush(QColor('#d5f5e3')))
                 font = msg_item.font()
@@ -302,7 +302,7 @@ class RuleCheckWindow(QWidget):
 
             btn_item = QTableWidgetItem()
             btn_item.setTextAlignment(Qt.AlignCenter)
-            btn_item.setData(Qt.UserRole, (emp_id, row))
+            btn_item.setData(Qt.UserRole, (emp_id, issue.issue_id))
             if issue.resolved:
                 btn_item.setText('已解决')
                 btn_item.setForeground(QBrush(QColor('#27ae60')))
@@ -348,17 +348,21 @@ class RuleCheckWindow(QWidget):
         data = item.data(Qt.UserRole)
         if not data:
             return
-        emp_id, issue_idx = data
+        emp_id, issue_id = data
         record = self.store.get_record(emp_id)
-        if not record or issue_idx >= len(record.issues):
+        if not record:
             return
-        issue = record.issues[issue_idx]
-        if issue.resolved:
+        issue = None
+        for i in record.issues:
+            if i.issue_id == issue_id:
+                issue = i
+                break
+        if not issue or issue.resolved:
             return
 
         menu = QMenu(self)
         action_resolve = QAction('标记此问题已解决', self)
-        action_resolve.triggered.connect(lambda: self._mark_issue_resolved(emp_id, issue_idx))
+        action_resolve.triggered.connect(lambda: self._mark_issue_resolved(emp_id, issue_id))
         menu.addAction(action_resolve)
         menu.exec_(self.detail_table.viewport().mapToGlobal(pos))
 
@@ -371,16 +375,20 @@ class RuleCheckWindow(QWidget):
         data = item.data(Qt.UserRole)
         if not data:
             return
-        emp_id, issue_idx = data
+        emp_id, issue_id = data
         record = self.store.get_record(emp_id)
-        if not record or issue_idx >= len(record.issues):
+        if not record:
             return
-        issue = record.issues[issue_idx]
-        if issue.resolved:
+        issue = None
+        for i in record.issues:
+            if i.issue_id == issue_id:
+                issue = i
+                break
+        if not issue or issue.resolved:
             return
-        self._mark_issue_resolved(emp_id, issue_idx)
+        self._mark_issue_resolved(emp_id, issue_id)
 
-    def _mark_issue_resolved(self, emp_id, issue_idx):
+    def _mark_issue_resolved(self, emp_id, issue_id):
         record = self.store.get_record(emp_id)
         if not record:
             return
@@ -391,7 +399,7 @@ class RuleCheckWindow(QWidget):
         )
         if not ok:
             return
-        ok, msg = self.store.mark_issue_resolved(emp_id, issue_idx, note)
+        ok, msg = self.store.mark_issue_resolved(emp_id, issue_id, note)
         if ok:
             self.refresh()
             QMessageBox.information(self, '提示', msg)

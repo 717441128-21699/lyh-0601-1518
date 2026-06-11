@@ -1,4 +1,5 @@
 from typing import List, Dict, Tuple
+import hashlib
 
 from models.data_store import DataStore
 from models.data_models import (
@@ -42,19 +43,17 @@ class RuleChecker:
             self._check_negative_salary(current_issues, record)
 
             if refresh:
-                resolved_notes = {}
+                resolved_map = {}
                 for old_issue in record.issues:
-                    if old_issue.resolved:
-                        resolved_notes[old_issue.message] = (
-                            old_issue.resolve_time, old_issue.resolve_note
-                        )
+                    if old_issue.resolved and old_issue.issue_id:
+                        resolved_map[old_issue.issue_id] = old_issue
 
                 for issue in current_issues:
-                    if issue.message in resolved_notes:
-                        rt, rn = resolved_notes[issue.message]
+                    if issue.issue_id in resolved_map:
+                        old = resolved_map[issue.issue_id]
                         issue.resolved = True
-                        issue.resolve_time = rt
-                        issue.resolve_note = rn
+                        issue.resolve_time = old.resolve_time
+                        issue.resolve_note = old.resolve_note
 
                 record.issues = current_issues
                 record.issue_messages = [i.message for i in current_issues]
@@ -78,8 +77,14 @@ class RuleChecker:
         self.store.mark_data_changed()
         return issues_by_emp
 
-    def _add_issue(self, issues: List, level: str, category: str, message: str):
+    def _gen_issue_id(self, emp_id: str, category: str, message: str) -> str:
+        raw = f"{emp_id}|{category}|{message}"
+        return hashlib.md5(raw.encode('utf-8')).hexdigest()[:12]
+
+    def _add_issue(self, issues: List, emp_id: str, level: str, category: str, message: str):
+        issue_id = self._gen_issue_id(emp_id, category, message)
         issues.append(IssueItem(
+            issue_id=issue_id,
             level=level,
             category=category,
             message=message,
@@ -91,7 +96,7 @@ class RuleChecker:
         if att.work_days == 0 and att.overtime_hours == 0 \
                 and att.leave_days == 0 and att.sick_days == 0:
             self._add_issue(
-                issues, 'warning', '考勤',
+                issues, record.emp_id, 'warning', '考勤',
                 '该员工无考勤数据，请确认是否为新入职或特殊情况'
             )
 
@@ -104,7 +109,7 @@ class RuleChecker:
         actual = s.social_insurance
         if expected > 0 and abs(expected - actual) / expected > 0.1:
             self._add_issue(
-                issues, 'warning', '社保',
+                issues, record.emp_id, 'warning', '社保',
                 f'社保金额异常：预计{expected:.2f}元，实际{actual:.2f}元'
             )
 
@@ -117,7 +122,7 @@ class RuleChecker:
         actual = s.housing_fund
         if expected > 0 and abs(expected - actual) / expected > 0.1:
             self._add_issue(
-                issues, 'warning', '公积金',
+                issues, record.emp_id, 'warning', '公积金',
                 f'公积金金额异常：预计{expected:.2f}元，实际{actual:.2f}元'
             )
 
@@ -128,13 +133,13 @@ class RuleChecker:
         if taxable <= 0:
             if s.personal_tax > 0:
                 self._add_issue(
-                    issues, 'error', '个税',
+                    issues, record.emp_id, 'error', '个税',
                     f'应纳税所得额为{taxable:.2f}元，个税应为0，实际{s.personal_tax:.2f}元'
                 )
             return
         if s.personal_tax <= 0:
             self._add_issue(
-                issues, 'warning', '个税',
+                issues, record.emp_id, 'warning', '个税',
                 f'应纳税所得额{taxable:.2f}元，个税不应为0'
             )
 
@@ -143,7 +148,7 @@ class RuleChecker:
         expected = round(s.base_salary + s.performance_bonus + s.allowance, 2)
         if abs(expected - s.gross_salary) > 0.02:
             self._add_issue(
-                issues, 'error', '计算',
+                issues, record.emp_id, 'error', '计算',
                 f'应发工资计算异常：合计{expected:.2f}元，实际{s.gross_salary:.2f}元'
             )
 
@@ -155,7 +160,7 @@ class RuleChecker:
         )
         if abs(expected - s.net_salary) > 0.02:
             self._add_issue(
-                issues, 'error', '计算',
+                issues, record.emp_id, 'error', '计算',
                 f'实发工资计算异常：应为{expected:.2f}元，实际{s.net_salary:.2f}元'
             )
 
@@ -172,7 +177,7 @@ class RuleChecker:
         if rate > threshold:
             direction = '上涨' if diff > 0 else '下降'
             self._add_issue(
-                issues, 'warning', '波动',
+                issues, record.emp_id, 'warning', '波动',
                 f'实发工资较上月{direction}{rate*100:.1f}%（{diff:+.2f}元），超过{threshold*100:.0f}%阈值'
             )
 
@@ -180,12 +185,12 @@ class RuleChecker:
         s = record.salary
         if s.net_salary < 0:
             self._add_issue(
-                issues, 'error', '金额',
+                issues, record.emp_id, 'error', '金额',
                 f'实发工资为负数: {s.net_salary:.2f}元'
             )
         if s.base_salary < 0:
             self._add_issue(
-                issues, 'error', '金额',
+                issues, record.emp_id, 'error', '金额',
                 f'基本工资为负数: {s.base_salary:.2f}元'
             )
 

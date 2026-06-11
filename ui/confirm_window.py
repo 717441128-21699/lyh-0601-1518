@@ -2,7 +2,8 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QComboBox, QMessageBox,
-    QFileDialog, QSplitter, QFrame, QInputDialog, QStatusBar
+    QFileDialog, QSplitter, QFrame, QInputDialog, QStatusBar, QDialog,
+    QTextEdit,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QBrush, QFont
@@ -88,9 +89,17 @@ class ConfirmWindow(QWidget):
         )
         self.btn_confirm_all.clicked.connect(self._confirm_all_clean)
 
+        self.btn_precheck = QPushButton('最终预检报告')
+        self.btn_precheck.setStyleSheet(
+            'font-size: 13px; font-weight: bold; padding: 6px 16px; '
+            'background: #9b59b6; color: white; border-radius: 4px;'
+        )
+        self.btn_precheck.clicked.connect(self._show_precheck_report)
+
         action_layout.addWidget(self.btn_confirm_selected)
         action_layout.addWidget(self.btn_unlock_selected)
         action_layout.addWidget(self.btn_confirm_all)
+        action_layout.addWidget(self.btn_precheck)
         action_layout.addStretch()
 
         export_group = QGroupBox('导出')
@@ -510,6 +519,234 @@ class ConfirmWindow(QWidget):
             QMessageBox.information(self, '完成', '\n'.join(result_parts))
 
         self.refresh()
+
+    def _show_precheck_report(self):
+        records = self.store.get_all_records()
+        unlocked_records = [r for r in records if not r.is_locked]
+
+        ready_count = 0
+        not_ready = []
+        total_diff_amount = 0.0
+        total_issues = 0
+
+        for r in unlocked_records:
+            reasons = []
+            if not r.review_steps.rule_checked:
+                reasons.append('未完成规则检查')
+            if not r.review_steps.diff_checked:
+                reasons.append('未完成差异核对')
+            if not r.review_steps.adjustment_reviewed:
+                reasons.append('未完成调整复核')
+            unresolved = r.get_unresolved_issues()
+            if unresolved:
+                reasons.append(f'有 {len(unresolved)} 个未解决问题')
+                total_issues += len(unresolved)
+
+            if r.last_month_salary:
+                diff = r.salary.net_salary - r.last_month_salary.net_salary
+                total_diff_amount += diff
+
+            if reasons:
+                not_ready.append({
+                    'emp_id': r.emp_id,
+                    'name': r.name,
+                    'department': r.department,
+                    'net_salary': r.salary.net_salary,
+                    'last_net': r.last_month_salary.net_salary if r.last_month_salary else None,
+                    'diff': (r.salary.net_salary - r.last_month_salary.net_salary) if r.last_month_salary else None,
+                    'reasons': reasons,
+                    'issues': unresolved,
+                })
+            else:
+                ready_count += 1
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('发薪前最终预检报告')
+        dialog.setMinimumSize(900, 650)
+        dialog.resize(1000, 700)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        header = QLabel('📋 发薪前最终预检报告')
+        header.setStyleSheet(
+            'font-size: 20px; font-weight: bold; color: #2c3e50; '
+            'padding: 8px 0;'
+        )
+        layout.addWidget(header)
+
+        stat_row = QHBoxLayout()
+        stat_row.setSpacing(16)
+
+        total_card = self._make_report_card('总人数', str(len(records)), '#3498db')
+        locked_card = self._make_report_card('已锁定', str(len(records) - len(unlocked_records)), '#27ae60')
+        ready_card = self._make_report_card('可锁定', str(ready_count), '#27ae60')
+        not_ready_card = self._make_report_card('待处理', str(len(not_ready)), '#e74c3c')
+        issues_card = self._make_report_card('未解决问题', str(total_issues), '#e67e22')
+
+        for card in [total_card, locked_card, ready_card, not_ready_card, issues_card]:
+            stat_row.addWidget(card)
+        layout.addLayout(stat_row)
+
+        amount_row = QHBoxLayout()
+        amount_label = QLabel(f'本月实发总额：{sum(r.salary.net_salary for r in records):,.2f} 元')
+        amount_label.setStyleSheet(
+            'font-size: 15px; font-weight: bold; padding: 8px 16px; '
+            'background: #e8f6f3; color: #16a085; border-radius: 4px;'
+        )
+        amount_row.addWidget(amount_label)
+
+        diff_label_text = f'较上月变化：{total_diff_amount:+,.2f} 元'
+        diff_label = QLabel(diff_label_text)
+        diff_color = '#27ae60' if total_diff_amount >= 0 else '#c0392b'
+        diff_label.setStyleSheet(
+            f'font-size: 15px; font-weight: bold; padding: 8px 16px; '
+            f'background: #f8f9f9; color: {diff_color}; border-radius: 4px;'
+        )
+        amount_row.addWidget(diff_label)
+        amount_row.addStretch()
+        layout.addLayout(amount_row)
+
+        detail_group = QGroupBox(f'待处理人员明细（共 {len(not_ready)} 人）')
+        detail_layout = QVBoxLayout(detail_group)
+
+        detail_table = QTableWidget()
+        detail_table.setColumnCount(6)
+        detail_table.setHorizontalHeaderLabels([
+            '员工编号', '姓名', '部门', '本月实发', '上月实发', '未完成项'
+        ])
+        detail_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        detail_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        detail_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        detail_table.setAlternatingRowColors(True)
+        detail_table.setRowCount(len(not_ready))
+
+        for row, item in enumerate(sorted(not_ready, key=lambda x: x['department'])):
+            values = [
+                item['emp_id'], item['name'], item['department'],
+                f'{item["net_salary"]:.2f}',
+                f'{item["last_net"]:.2f}' if item['last_net'] is not None else '-',
+                '；'.join(item['reasons']),
+            ]
+            for col, val in enumerate(values):
+                cell = QTableWidgetItem(str(val))
+                if col < 5:
+                    cell.setTextAlignment(Qt.AlignCenter)
+                else:
+                    cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                cell.setBackground(QBrush(QColor('#fdf2e9')))
+                if col == 5:
+                    cell.setForeground(QBrush(QColor('#c0392b')))
+                    font = cell.font()
+                    font.setBold(True)
+                    cell.setFont(font)
+                detail_table.setItem(row, col, cell)
+
+        detail_layout.addWidget(detail_table)
+        layout.addWidget(detail_group, stretch=1)
+
+        issue_summary = QGroupBox('未解决问题汇总')
+        issue_layout = QVBoxLayout(issue_summary)
+        issue_text = QTextEdit()
+        issue_text.setReadOnly(True)
+        issue_text.setMaximumHeight(150)
+
+        if not_ready:
+            lines = []
+            for item in not_ready[:20]:
+                if item['issues']:
+                    issue_msgs = '; '.join(i.message for i in item['issues'][:3])
+                    lines.append(f'【{item["name"]}({item["emp_id"]})】{issue_msgs}')
+            if len(not_ready) > 20:
+                lines.append(f'... 还有 {len(not_ready) - 20} 人的问题未列出')
+            issue_text.setPlainText('\n'.join(lines) if lines else '暂无未解决问题')
+        else:
+            issue_text.setPlainText('🎉 所有人员均已完成复核，无未解决问题！')
+
+        issue_layout.addWidget(issue_text)
+        layout.addWidget(issue_summary)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        btn_close = QPushButton('关闭')
+        btn_close.setMinimumWidth(100)
+        btn_close.setMinimumHeight(38)
+        btn_close.clicked.connect(dialog.reject)
+        btn_row.addWidget(btn_close)
+
+        btn_lock_ready = QPushButton('一键锁定可确认人员')
+        btn_lock_ready.setMinimumWidth(180)
+        btn_lock_ready.setMinimumHeight(38)
+        btn_lock_ready.setStyleSheet(
+            'font-size: 14px; font-weight: bold; '
+            'background: #27ae60; color: white; border-radius: 4px;'
+        )
+        if ready_count == 0:
+            btn_lock_ready.setEnabled(False)
+            btn_lock_ready.setText('暂无可锁定人员')
+        btn_lock_ready.clicked.connect(lambda: self._lock_ready_from_precheck(dialog, ready_count))
+        btn_row.addWidget(btn_lock_ready)
+
+        layout.addLayout(btn_row)
+
+        dialog.exec_()
+
+    def _make_report_card(self, title: str, value: str, color: str) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet(
+            f'background: white; border: 2px solid {color}; '
+            f'border-radius: 8px;'
+        )
+        frame.setMinimumHeight(70)
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(12, 8, 12, 8)
+        v.setSpacing(2)
+        lbl_val = QLabel(value)
+        lbl_val.setAlignment(Qt.AlignCenter)
+        lbl_val.setStyleSheet(
+            f'font-size: 22px; font-weight: bold; color: {color};'
+        )
+        lbl_title = QLabel(title)
+        lbl_title.setAlignment(Qt.AlignCenter)
+        lbl_title.setStyleSheet('font-size: 12px; color: #666;')
+        v.addWidget(lbl_val)
+        v.addWidget(lbl_title)
+        return frame
+
+    def _lock_ready_from_precheck(self, dialog: QDialog, ready_count: int):
+        reply = QMessageBox.question(
+            self, '确认锁定',
+            f'即将锁定 {ready_count} 名已完成全部复核的人员，是否继续？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success = 0
+        errors = []
+        for r in self.store.get_all_records():
+            if r.is_locked:
+                continue
+            if r.review_steps.all_completed() and not r.has_unresolved_issues():
+                ok, msg = self.store.lock_record(r.emp_id, check_review=True)
+                if ok:
+                    success += 1
+                else:
+                    errors.append(msg)
+
+        dialog.accept()
+        self.refresh()
+
+        if errors:
+            QMessageBox.warning(self, '部分失败',
+                                f'成功锁定 {success} 人，失败 {len(errors)} 人：\n' + '\n'.join(errors))
+        else:
+            QMessageBox.information(self, '完成', f'成功锁定 {success} 人')
 
     def _export(self, export_type: str):
         records = self.store.get_all_records()

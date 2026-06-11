@@ -2,12 +2,13 @@ import os
 import pandas as pd
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
+import uuid
 
 from models.data_store import DataStore
 from models.data_models import (
     Employee, SalaryRecord, SalaryData,
     AttendanceData, SalaryStatus, OperationType,
-    IssueItem
+    IssueItem, ImportBatch, ImportFileType
 )
 
 
@@ -83,8 +84,12 @@ def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, 
     warnings: List[str] = []
     imported = 0
     skipped_locked = 0
+    new_count = 0
 
     locked_names: List[str] = []
+    updated_ids: List[str] = []
+    new_ids: List[str] = []
+    skipped_ids: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
@@ -114,6 +119,7 @@ def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, 
         if existing and existing.is_locked and not force:
             skipped_locked += 1
             locked_names.append(f'{existing.name}({emp_id})')
+            skipped_ids.append(emp_id)
             continue
 
         salary = SalaryData(
@@ -156,9 +162,10 @@ def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, 
             existing.status = SalaryStatus.PENDING
             existing.confirm_time = None
             store._log_operation(
-                OperationType.DATA_IMPORTED, emp_id, existing.name,
+                OperationType.SALARY_IMPORTED, emp_id, existing.name,
                 f'重新导入工资数据，原应发{old_salary.gross_salary:.2f}→新应发{salary.gross_salary:.2f}'
             )
+            updated_ids.append(emp_id)
         else:
             record = SalaryRecord(
                 emp_id=emp_id, name=name, department=department,
@@ -166,9 +173,11 @@ def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, 
             )
             store.add_or_update_record(record, check_lock=False)
             store._log_operation(
-                OperationType.DATA_IMPORTED, emp_id, name,
+                OperationType.SALARY_IMPORTED, emp_id, name,
                 '首次导入工资数据'
             )
+            new_ids.append(emp_id)
+            new_count += 1
 
         imported += 1
 
@@ -179,6 +188,22 @@ def import_salary_excel(file_path: str, force: bool = False) -> Tuple[int, int, 
         if len(locked_names) > 5:
             show_names += f' 等{len(locked_names)}人'
         warnings.append(f'已跳过 {skipped_locked} 名已锁定人员（{show_names}），如需更新请先取消锁定')
+
+    batch = ImportBatch(
+        batch_id=str(uuid.uuid4())[:8],
+        file_type=ImportFileType.SALARY,
+        file_name=os.path.basename(file_path),
+        import_time=datetime.now(),
+        operator=store.operator,
+        total_count=imported + skipped_locked,
+        updated_count=len(updated_ids),
+        skipped_locked_count=skipped_locked,
+        new_count=new_count,
+        updated_employees=updated_ids,
+        skipped_employees=skipped_ids,
+        new_employees=new_ids,
+    )
+    store.add_import_batch(batch)
 
     return imported, skipped_locked, errors, warnings
 
@@ -193,6 +218,9 @@ def import_attendance_excel(file_path: str) -> Tuple[int, int, List[str], List[s
     matched = 0
     skipped_locked = 0
     mismatched: List[str] = []
+    updated_ids: List[str] = []
+    skipped_ids: List[str] = []
+    skipped_names: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
@@ -228,21 +256,49 @@ def import_attendance_excel(file_path: str) -> Tuple[int, int, List[str], List[s
         if record:
             if record.is_locked:
                 skipped_locked += 1
+                skipped_ids.append(emp_id)
+                skipped_names.append(f'{record.name}({emp_id})')
                 continue
             record.attendance = attendance
+            record.review_steps.rule_checked = False
             matched += 1
+            updated_ids.append(emp_id)
+            store._log_operation(
+                OperationType.ATTENDANCE_IMPORTED, emp_id, record.name,
+                '更新考勤数据'
+            )
         else:
             mismatched.append(emp_id)
 
     store.import_status['attendance'] = True
 
     if skipped_locked > 0:
-        warnings.append(f'已跳过 {skipped_locked} 名已锁定人员的考勤数据更新')
+        show_names = ', '.join(skipped_names[:5])
+        if len(skipped_names) > 5:
+            show_names += f' 等{len(skipped_names)}人'
+        warnings.append(f'已跳过 {skipped_locked} 名已锁定人员的考勤数据更新（{show_names}）')
 
     if mismatched:
         errors.append(f'未匹配到工资表的员工编号: {", ".join(mismatched[:10])}')
         if len(mismatched) > 10:
             errors.append(f'... 还有 {len(mismatched) - 10} 人未匹配')
+
+    batch = ImportBatch(
+        batch_id=str(uuid.uuid4())[:8],
+        file_type=ImportFileType.ATTENDANCE,
+        file_name=os.path.basename(file_path),
+        import_time=datetime.now(),
+        operator=store.operator,
+        total_count=matched + skipped_locked + len(mismatched),
+        updated_count=matched,
+        skipped_locked_count=skipped_locked,
+        new_count=0,
+        updated_employees=updated_ids,
+        skipped_employees=skipped_ids,
+        new_employees=[],
+    )
+    store.add_import_batch(batch)
+
     return matched, len(mismatched), errors, warnings
 
 
@@ -254,7 +310,11 @@ def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str], List[
     errors: List[str] = []
     warnings: List[str] = []
     matched = 0
+    skipped_locked = 0
     mismatched: List[str] = []
+    updated_ids: List[str] = []
+    skipped_ids: List[str] = []
+    skipped_names: List[str] = []
 
     try:
         df = pd.read_excel(file_path, dtype=str)
@@ -302,17 +362,51 @@ def import_last_month_salary(file_path: str) -> Tuple[int, int, List[str], List[
 
         record = store.get_record(emp_id)
         if record:
+            if record.is_locked:
+                skipped_locked += 1
+                skipped_ids.append(emp_id)
+                skipped_names.append(f'{record.name}({emp_id})')
+                continue
             record.last_month_salary = last_salary
             record.review_steps.diff_checked = False
             matched += 1
+            updated_ids.append(emp_id)
+            store._log_operation(
+                OperationType.LASTMONTH_IMPORTED, emp_id, record.name,
+                f'更新上月工资数据，应发{last_salary.gross_salary:.2f}'
+            )
         else:
             mismatched.append(emp_id)
 
     store.last_month_data = {r.emp_id: r.last_month_salary
                              for r in store.get_all_records() if r.last_month_salary}
     store.import_status['last_month'] = True
+
+    if skipped_locked > 0:
+        show_names = ', '.join(skipped_names[:5])
+        if len(skipped_names) > 5:
+            show_names += f' 等{len(skipped_names)}人'
+        warnings.append(f'已跳过 {skipped_locked} 名已锁定人员的上月工资更新（{show_names}）')
+
     if mismatched:
         errors.append(f'上月工资表中未在本月出现的员工: {", ".join(mismatched[:10])}')
+
+    batch = ImportBatch(
+        batch_id=str(uuid.uuid4())[:8],
+        file_type=ImportFileType.LAST_MONTH,
+        file_name=os.path.basename(file_path),
+        import_time=datetime.now(),
+        operator=store.operator,
+        total_count=matched + skipped_locked + len(mismatched),
+        updated_count=matched,
+        skipped_locked_count=skipped_locked,
+        new_count=0,
+        updated_employees=updated_ids,
+        skipped_employees=skipped_ids,
+        new_employees=[],
+    )
+    store.add_import_batch(batch)
+
     return matched, len(mismatched), errors, warnings
 
 

@@ -19,8 +19,72 @@ class OperationType(Enum):
     RULE_CHECKED = '规则检查通过'
     DIFF_CHECKED = '差异核对通过'
     ADJUSTMENT_REVIEWED = '调整复核通过'
-    DATA_IMPORTED = '数据导入'
+    SALARY_IMPORTED = '工资表导入'
+    ATTENDANCE_IMPORTED = '考勤表导入'
+    LASTMONTH_IMPORTED = '上月工资导入'
     ISSUE_RESOLVED = '问题标记已解决'
+    BATCH_RULE_CHECK = '批量规则检查'
+    BATCH_DIFF_CHECK = '批量差异核对'
+    PROJECT_SAVED = '项目保存'
+    PROJECT_LOADED = '项目加载'
+
+
+class ImportFileType(Enum):
+    SALARY = '工资表'
+    ATTENDANCE = '考勤表'
+    LAST_MONTH = '上月工资表'
+
+
+@dataclass
+class ImportBatch:
+    batch_id: str
+    file_type: ImportFileType
+    file_name: str
+    import_time: datetime
+    operator: str
+    total_count: int = 0
+    updated_count: int = 0
+    skipped_locked_count: int = 0
+    new_count: int = 0
+    updated_employees: List[str] = field(default_factory=list)
+    skipped_employees: List[str] = field(default_factory=list)
+    new_employees: List[str] = field(default_factory=list)
+    note: str = ''
+
+    def to_dict(self) -> Dict:
+        return {
+            'batch_id': self.batch_id,
+            'file_type': self.file_type.name,
+            'file_name': self.file_name,
+            'import_time': self.import_time.isoformat(),
+            'operator': self.operator,
+            'total_count': self.total_count,
+            'updated_count': self.updated_count,
+            'skipped_locked_count': self.skipped_locked_count,
+            'new_count': self.new_count,
+            'updated_employees': self.updated_employees,
+            'skipped_employees': self.skipped_employees,
+            'new_employees': self.new_employees,
+            'note': self.note,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'ImportBatch':
+        return cls(
+            batch_id=data['batch_id'],
+            file_type=ImportFileType[data['file_type']],
+            file_name=data['file_name'],
+            import_time=datetime.fromisoformat(data['import_time']),
+            operator=data.get('operator', ''),
+            total_count=data.get('total_count', 0),
+            updated_count=data.get('updated_count', 0),
+            skipped_locked_count=data.get('skipped_locked_count', 0),
+            new_count=data.get('new_count', 0),
+            updated_employees=data.get('updated_employees', []),
+            skipped_employees=data.get('skipped_employees', []),
+            new_employees=data.get('new_employees', []),
+            note=data.get('note', ''),
+        )
 
 
 @dataclass
@@ -81,6 +145,7 @@ class AttendanceData:
 
 @dataclass
 class IssueItem:
+    issue_id: str
     level: str
     category: str
     message: str
@@ -90,6 +155,7 @@ class IssueItem:
 
     def to_dict(self) -> Dict:
         return {
+            'issue_id': self.issue_id,
             'level': self.level,
             'category': self.category,
             'message': self.message,
@@ -101,6 +167,7 @@ class IssueItem:
     @classmethod
     def from_dict(cls, data: Dict) -> 'IssueItem':
         item = cls(
+            issue_id=data.get('issue_id', ''),
             level=data['level'],
             category=data['category'],
             message=data['message'],

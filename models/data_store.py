@@ -7,7 +7,7 @@ from .data_models import (
     SalaryRecord, AdjustmentRecord, SalaryData,
     AttendanceData, Employee, SalaryStatus,
     OperationType, OperationLog, IssueItem,
-    ProjectMeta, ReviewSteps
+    ProjectMeta, ReviewSteps, ImportBatch, ImportFileType
 )
 
 
@@ -148,6 +148,18 @@ class DataStore:
         self.current_project_path: Optional[str] = None
         self.project_meta: Optional[ProjectMeta] = None
         self.data_changed: bool = False
+        self.import_batches: List[ImportBatch] = []
+        self.ui_state: Dict[str, Any] = {
+            'current_tab': 0,
+            'rule_filter': 'all',
+            'diff_department': '全部',
+            'diff_only_diff': False,
+            'diff_only_issue': False,
+            'diff_only_unlocked': False,
+            'adj_filter_type': 'all',
+            'adj_filter_emp': 'all',
+            'confirm_department': '全部',
+        }
 
     def _log_operation(self, op_type: OperationType, emp_id: str, name: str,
                        detail: str, field_name: str = '',
@@ -303,15 +315,21 @@ class DataStore:
         self.data_changed = True
         return True, '已标记调整复核完成'
 
-    def mark_issue_resolved(self, emp_id: str, issue_idx: int, note: str = '') -> Tuple[bool, str]:
+    def mark_issue_resolved(self, emp_id: str, issue_id: str, note: str = '') -> Tuple[bool, str]:
         record = self.records.get(emp_id)
         if not record:
             return False, '员工不存在'
         if record.is_locked:
             return False, f'员工 {record.name} 已锁定'
-        if issue_idx < 0 or issue_idx >= len(record.issues):
-            return False, '问题索引不存在'
-        issue = record.issues[issue_idx]
+        issue = None
+        for i in record.issues:
+            if i.issue_id == issue_id:
+                issue = i
+                break
+        if not issue:
+            return False, '问题不存在'
+        if issue.resolved:
+            return False, '该问题已经标记为已解决'
         issue.resolved = True
         issue.resolve_time = datetime.now()
         issue.resolve_note = note or '手动标记已解决'
@@ -431,11 +449,40 @@ class DataStore:
             'has_unresolved_issues': has_issues,
         }
 
+    def add_import_batch(self, batch: ImportBatch):
+        self.import_batches.append(batch)
+        op_type_map = {
+            ImportFileType.SALARY: OperationType.SALARY_IMPORTED,
+            ImportFileType.ATTENDANCE: OperationType.ATTENDANCE_IMPORTED,
+            ImportFileType.LAST_MONTH: OperationType.LASTMONTH_IMPORTED,
+        }
+        op_type = op_type_map.get(batch.file_type, OperationType.SALARY_IMPORTED)
+        detail = (
+            f'{batch.file_type.value}导入: 共{batch.total_count}条, '
+            f'更新{batch.updated_count}条, 新增{batch.new_count}条, '
+            f'跳过锁定{batch.skipped_locked_count}条'
+        )
+        self._log_operation(op_type, 'BATCH', '批量', detail)
+        self.data_changed = True
+
+    def get_import_batches(self) -> List[ImportBatch]:
+        return sorted(self.import_batches, key=lambda b: b.import_time, reverse=True)
+
+    def get_import_batches_by_type(self, file_type: ImportFileType) -> List[ImportBatch]:
+        return [b for b in self.import_batches if b.file_type == file_type]
+
+    def set_ui_state(self, key: str, value: Any):
+        self.ui_state[key] = value
+
+    def get_ui_state(self, key: str, default: Any = None) -> Any:
+        return self.ui_state.get(key, default)
+
     def clear_all(self):
         self.records.clear()
         self.operation_logs.clear()
         self.employees.clear()
         self.last_month_data.clear()
+        self.import_batches.clear()
         self.import_status = {
             'salary': False, 'attendance': False, 'last_month': False
         }
@@ -443,6 +490,17 @@ class DataStore:
         self.current_project_path = None
         self.project_meta = None
         self.data_changed = False
+        self.ui_state = {
+            'current_tab': 0,
+            'rule_filter': 'all',
+            'diff_department': '全部',
+            'diff_only_diff': False,
+            'diff_only_issue': False,
+            'diff_only_unlocked': False,
+            'adj_filter_type': 'all',
+            'adj_filter_emp': 'all',
+            'confirm_department': '全部',
+        }
 
     def save_project(self, file_path: str, project_name: str = '', note: str = '') -> Tuple[bool, str]:
         try:
@@ -458,7 +516,7 @@ class DataStore:
                 note=note,
             )
             data = {
-                'version': '2.0',
+                'version': '2.1',
                 'meta': meta.to_dict(),
                 'operator': self.operator,
                 'current_month': self.current_month,
@@ -472,6 +530,8 @@ class DataStore:
                 'records': [_record_to_dict(r) for r in self.records.values()],
                 'operation_logs': [l.to_dict() for l in self.operation_logs],
                 'employees': {eid: e.__dict__ for eid, e in self.employees.items()},
+                'import_batches': [b.to_dict() for b in self.import_batches],
+                'ui_state': self.ui_state,
             }
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -512,6 +572,12 @@ class DataStore:
             for eid, e_dict in data.get('employees', {}).items():
                 self.employees[eid] = Employee(**e_dict)
 
+            for b_dict in data.get('import_batches', []):
+                self.import_batches.append(ImportBatch.from_dict(b_dict))
+
+            if 'ui_state' in data:
+                self.ui_state.update(data['ui_state'])
+
             for r in self.records.values():
                 if r.last_month_salary:
                     self.last_month_data[r.emp_id] = r.last_month_salary
@@ -519,6 +585,10 @@ class DataStore:
             self.current_project_path = file_path
             self.project_meta = meta
             self.data_changed = False
-            return True, f'成功加载项目，共 {len(self.records)} 名员工，{len(self.operation_logs)} 条操作记录'
+            return True, (
+                f'成功加载项目，共 {len(self.records)} 名员工，'
+                f'{len(self.operation_logs)} 条操作记录，'
+                f'{len(self.import_batches)} 次导入批次'
+            )
         except Exception as e:
             return False, f'加载失败: {str(e)}'
