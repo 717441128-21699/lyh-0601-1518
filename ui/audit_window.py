@@ -51,24 +51,24 @@ class AuditWindow(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
 
         filter_group = QGroupBox('筛选条件')
         filter_layout = QHBoxLayout(filter_group)
-        filter_layout.setSpacing(12)
+        filter_layout.setSpacing(10)
 
         filter_layout.addWidget(QLabel('部门:'))
         self.cmb_department = QComboBox()
         self.cmb_department.addItem('全部部门', 'all')
-        self.cmb_department.setMinimumWidth(130)
+        self.cmb_department.setMinimumWidth(120)
         self.cmb_department.currentIndexChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.cmb_department)
 
         filter_layout.addWidget(QLabel('人员:'))
         self.cmb_employee = QComboBox()
         self.cmb_employee.addItem('全部人员', 'all')
-        self.cmb_employee.setMinimumWidth(130)
+        self.cmb_employee.setMinimumWidth(120)
         self.cmb_employee.currentIndexChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.cmb_employee)
 
@@ -77,7 +77,7 @@ class AuditWindow(QWidget):
         self.cmb_op_type.addItem('全部类型', 'all')
         for op_type in OperationType:
             self.cmb_op_type.addItem(op_type.value, op_type.name)
-        self.cmb_op_type.setMinimumWidth(140)
+        self.cmb_op_type.setMinimumWidth(130)
         self.cmb_op_type.currentIndexChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.cmb_op_type)
 
@@ -100,10 +100,10 @@ class AuditWindow(QWidget):
         filter_layout.addStretch()
 
         btn_export = QPushButton('导出审计明细')
-        btn_export.setMinimumHeight(36)
+        btn_export.setMinimumHeight(34)
         btn_export.setStyleSheet(
             'background: #27ae60; color: white; border-radius: 4px; '
-            'padding: 0 16px; font-weight: bold;'
+            'padding: 0 14px; font-weight: bold;'
         )
         btn_export.clicked.connect(self._export_audit)
         filter_layout.addWidget(btn_export)
@@ -112,93 +112,124 @@ class AuditWindow(QWidget):
 
         stat_group = QGroupBox('统计汇总')
         stat_layout = QHBoxLayout(stat_group)
-        stat_layout.setSpacing(16)
+        stat_layout.setSpacing(12)
 
         self.lbl_total_ops = QLabel('总操作: 0')
-        self.lbl_total_ops.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #f8f9f9; border-radius: 4px;')
+        self.lbl_total_ops.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #f8f9f9; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_total_ops)
         self.lbl_adjust_count = QLabel('调整: 0')
-        self.lbl_adjust_count.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #e8f6f3; color: #16a085; border-radius: 4px;')
+        self.lbl_adjust_count.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #e8f6f3; color: #16a085; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_adjust_count)
         self.lbl_lock_count = QLabel('锁定: 0')
-        self.lbl_lock_count.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #fadbd8; color: #c0392b; border-radius: 4px;')
+        self.lbl_lock_count.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #fadbd8; color: #c0392b; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_lock_count)
         self.lbl_unlock_count = QLabel('解锁: 0')
-        self.lbl_unlock_count.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #fdebd0; color: #e67e22; border-radius: 4px;')
+        self.lbl_unlock_count.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #fdebd0; color: #e67e22; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_unlock_count)
         self.lbl_review_count = QLabel('复核: 0')
-        self.lbl_review_count.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #d4e6f1; color: #2980b9; border-radius: 4px;')
+        self.lbl_review_count.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #d4e6f1; color: #2980b9; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_review_count)
         self.lbl_import_count = QLabel('导入: 0')
-        self.lbl_import_count.setStyleSheet('font-size: 13px; font-weight: bold; padding: 6px 12px; background: #fef9e7; color: #8e6d00; border-radius: 4px;')
+        self.lbl_import_count.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px 10px; background: #fef9e7; color: #8e6d00; border-radius: 4px;')
         stat_layout.addWidget(self.lbl_import_count)
         stat_layout.addStretch()
         layout.addWidget(stat_group)
 
-        splitter = QSplitter(Qt.Vertical)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, stretch=1)
 
-        ops_group = QGroupBox('操作记录')
-        ops_layout = QVBoxLayout(ops_group)
+        self._init_ops_tab()
+        self._init_import_tab()
+
+        self._all_logs = []
+        self._filtered_logs = []
+
+    def _init_ops_tab(self):
+        ops_tab = QWidget()
+        ops_layout = QVBoxLayout(ops_tab)
+        ops_layout.setContentsMargins(0, 4, 0, 0)
+
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             '操作时间', '操作类型', '范围', '员工编号', '姓名', '部门', '操作详情', '操作人'
         ])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        for i in range(8):
+            if i != 6:
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         ops_layout.addWidget(self.table)
-        splitter.addWidget(ops_group)
 
-        batch_group = QGroupBox('导入批次追踪')
-        batch_layout = QVBoxLayout(batch_group)
+        self.tabs.addTab(ops_tab, '操作记录')
+
+    def _init_import_tab(self):
+        import_tab = QWidget()
+        import_layout = QVBoxLayout(import_tab)
+        import_layout.setContentsMargins(0, 4, 0, 0)
+        import_layout.setSpacing(8)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        left_box = QGroupBox('导入批次列表')
+        left_layout = QVBoxLayout(left_box)
         self.batch_table = QTableWidget()
-        self.batch_table.setColumnCount(8)
+        self.batch_table.setColumnCount(7)
         self.batch_table.setHorizontalHeaderLabels([
-            '批次ID', '导入类型', '文件名', '导入时间', '更新人数', '新增人数', '跳过锁定', '操作人'
+            '批次ID', '类型', '文件名', '时间', '更新', '新增', '跳过'
         ])
-        self.batch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.batch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        for i in range(7):
+            if i != 2:
+                self.batch_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self.batch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.batch_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.batch_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.batch_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.batch_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.batch_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.batch_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.batch_table.setAlternatingRowColors(True)
         self.batch_table.verticalHeader().setVisible(False)
         self.batch_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.batch_table.itemSelectionChanged.connect(self._on_batch_selected)
-        batch_layout.addWidget(self.batch_table)
+        left_layout.addWidget(self.batch_table)
+        splitter.addWidget(left_box)
 
-        self.batch_detail_label = QLabel('选择上方批次查看具体人员明细')
-        self.batch_detail_label.setStyleSheet('font-size: 12px; color: #7f8c8d; padding: 4px;')
-        batch_layout.addWidget(self.batch_detail_label)
+        right_splitter = QSplitter(Qt.Vertical)
 
-        self.batch_detail = QTextEdit()
-        self.batch_detail.setReadOnly(True)
-        self.batch_detail.setMaximumHeight(120)
-        self.batch_detail.setStyleSheet(
-            'background: #fefefe; border: 1px solid #ddd; border-radius: 4px; '
-            'font-family: "Microsoft YaHei", monospace; font-size: 12px; padding: 6px;'
-        )
-        batch_layout.addWidget(self.batch_detail)
+        dept_box = QGroupBox('部门影响面（选中批次 → 按部门汇总）')
+        dept_layout = QVBoxLayout(dept_box)
+        self.dept_table = QTableWidget()
+        self.dept_table.setColumnCount(5)
+        self.dept_table.setHorizontalHeaderLabels(['部门', '更新', '新增', '跳过(锁定)', '合计'])
+        for i in range(5):
+            self.dept_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+        self.dept_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.dept_table.setAlternatingRowColors(True)
+        self.dept_table.verticalHeader().setVisible(False)
+        self.dept_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.dept_table.itemSelectionChanged.connect(self._on_dept_selected)
+        dept_layout.addWidget(self.dept_table)
+        right_splitter.addWidget(dept_box)
 
-        splitter.addWidget(batch_group)
-        splitter.setSizes([400, 250])
-        layout.addWidget(splitter, stretch=1)
+        people_box = QGroupBox('人员明细（选中部门 → 查看具体人员）')
+        people_layout = QVBoxLayout(people_box)
+        self.people_table = QTableWidget()
+        self.people_table.setColumnCount(5)
+        self.people_table.setHorizontalHeaderLabels(['员工编号', '姓名', '部门', '状态', '说明'])
+        for i in range(5):
+            if i != 4:
+                self.people_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        self.people_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.people_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.people_table.setAlternatingRowColors(True)
+        self.people_table.verticalHeader().setVisible(False)
+        people_layout.addWidget(self.people_table)
+        right_splitter.addWidget(people_box)
+        right_splitter.setSizes([200, 250])
 
-        self._all_logs = []
-        self._filtered_logs = []
+        splitter.addWidget(right_splitter)
+        splitter.setSizes([520, 480])
+
+        import_layout.addWidget(splitter)
+        self.tabs.addTab(import_tab, '导入批次影响面')
 
     def refresh(self):
         self._refresh_filters()
@@ -356,7 +387,6 @@ class AuditWindow(QWidget):
                 str(batch.updated_count),
                 str(batch.new_count),
                 str(batch.skipped_locked_count),
-                batch.operator,
             ]
             for col, val in enumerate(values):
                 item = QTableWidgetItem(str(val))
@@ -369,11 +399,9 @@ class AuditWindow(QWidget):
                 self.batch_table.setItem(row, col, item)
             self.batch_table.item(row, 0).setData(Qt.UserRole, batch.batch_id)
 
-        if batches:
-            self.batch_detail_label.setText(f'共 {len(batches)} 次导入批次，选择批次查看人员明细')
-        else:
-            self.batch_detail_label.setText('暂无导入批次记录')
-            self.batch_detail.clear()
+        if not batches:
+            self.dept_table.setRowCount(0)
+            self.people_table.setRowCount(0)
 
     def _on_batch_selected(self):
         items = self.batch_table.selectedItems()
@@ -392,40 +420,85 @@ class AuditWindow(QWidget):
         if not batch:
             return
 
-        lines = []
-        type_label = IMPORT_TYPE_LABELS.get(batch.file_type, batch.file_type.value)
-        lines.append(f'【{type_label}】{batch.file_name}  导入时间: {batch.import_time.strftime("%Y-%m-%d %H:%M")}  操作人: {batch.operator}')
-        lines.append(f'总计 {batch.total_count} 条 | 更新 {batch.updated_count} | 新增 {batch.new_count} | 跳过锁定 {batch.skipped_locked_count}')
-        lines.append('')
+        dept_summary = {}
 
-        if batch.updated_employees:
-            names = []
-            for eid in batch.updated_employees:
-                r = self.store.get_record(eid)
-                names.append(f'{r.name}({eid})' if r else eid)
-            lines.append(f'✅ 更新人员 ({len(batch.updated_employees)}): {", ".join(names[:30])}')
-            if len(batch.updated_employees) > 30:
-                lines.append(f'   ... 还有 {len(batch.updated_employees) - 30} 人')
+        for eid in batch.updated_employees:
+            r = self.store.get_record(eid)
+            dept = r.department if r else '未知部门'
+            if dept not in dept_summary:
+                dept_summary[dept] = {'updated': [], 'new': [], 'skipped': []}
+            dept_summary[dept]['updated'].append((eid, r.name if r else eid))
 
-        if batch.new_employees:
-            names = []
-            for eid in batch.new_employees:
-                r = self.store.get_record(eid)
-                names.append(f'{r.name}({eid})' if r else eid)
-            lines.append(f'🆕 新增人员 ({len(batch.new_employees)}): {", ".join(names[:30])}')
-            if len(batch.new_employees) > 30:
-                lines.append(f'   ... 还有 {len(batch.new_employees) - 30} 人')
+        for eid in batch.new_employees:
+            r = self.store.get_record(eid)
+            dept = r.department if r else '未知部门'
+            if dept not in dept_summary:
+                dept_summary[dept] = {'updated': [], 'new': [], 'skipped': []}
+            dept_summary[dept]['new'].append((eid, r.name if r else eid))
 
-        if batch.skipped_employees:
-            names = []
-            for eid in batch.skipped_employees:
-                r = self.store.get_record(eid)
-                names.append(f'{r.name}({eid})' if r else eid)
-            lines.append(f'🔒 跳过(已锁定) ({len(batch.skipped_employees)}): {", ".join(names[:30])}')
-            if len(batch.skipped_employees) > 30:
-                lines.append(f'   ... 还有 {len(batch.skipped_employees) - 30} 人')
+        for eid in batch.skipped_employees:
+            r = self.store.get_record(eid)
+            dept = r.department if r else '未知部门'
+            if dept not in dept_summary:
+                dept_summary[dept] = {'updated': [], 'new': [], 'skipped': []}
+            dept_summary[dept]['skipped'].append((eid, r.name if r else eid))
 
-        self.batch_detail.setPlainText('\n'.join(lines))
+        self._current_batch = batch
+        self._current_dept_summary = dept_summary
+
+        self.dept_table.setRowCount(len(dept_summary))
+        for row, (dept, data) in enumerate(sorted(dept_summary.items())):
+            u, n, s = len(data['updated']), len(data['new']), len(data['skipped'])
+            values = [dept, str(u), str(n), str(s), str(u + n + s)]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(str(val))
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 3 and s > 0:
+                    item.setForeground(QBrush(QColor('#e67e22')))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                item.setData(Qt.UserRole, dept)
+                self.dept_table.setItem(row, col, item)
+
+        self.people_table.setRowCount(0)
+
+    def _on_dept_selected(self):
+        if not hasattr(self, '_current_dept_summary') or not self._current_dept_summary:
+            return
+        items = self.dept_table.selectedItems()
+        if not items:
+            return
+        dept = self.dept_table.item(items[0].row(), 0).data(Qt.UserRole)
+        if not dept or dept not in self._current_dept_summary:
+            return
+
+        data = self._current_dept_summary[dept]
+        people = []
+        for eid, name in data['updated']:
+            people.append((eid, name, dept, '更新', '本次导入更新数据'))
+        for eid, name in data['new']:
+            people.append((eid, name, dept, '新增', '本次导入新增员工'))
+        for eid, name in data['skipped']:
+            people.append((eid, name, dept, '跳过(已锁定)', '已锁定未被更新'))
+
+        self.people_table.setRowCount(len(people))
+        for row, (eid, name, d, status, note) in enumerate(people):
+            values = [eid, name, d, status, note]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(str(val))
+                item.setTextAlignment(Qt.AlignCenter if col != 4 else Qt.AlignVCenter | Qt.AlignLeft)
+                if col == 3:
+                    if status == '更新':
+                        item.setForeground(QBrush(QColor('#2980b9')))
+                    elif status == '新增':
+                        item.setForeground(QBrush(QColor('#27ae60')))
+                    elif '跳过' in status:
+                        item.setForeground(QBrush(QColor('#e67e22')))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.people_table.setItem(row, col, item)
 
     def _export_audit(self):
         if not self._filtered_logs and not self.store.get_import_batches():
@@ -461,20 +534,52 @@ class AuditWindow(QWidget):
                 })
 
             batch_data = []
+            people_data = []
             for batch in self.store.get_import_batches():
                 type_label = IMPORT_TYPE_LABELS.get(batch.file_type, batch.file_type.value)
-                updated_names = []
+                updated_names, new_names, skipped_names = [], [], []
                 for eid in batch.updated_employees:
                     r = self.store.get_record(eid)
-                    updated_names.append(f'{r.name}({eid})' if r else eid)
-                new_names = []
+                    name = r.name if r else eid
+                    dept = r.department if r else '-'
+                    updated_names.append(f'{name}({eid})')
+                    people_data.append({
+                        '批次ID': batch.batch_id,
+                        '导入类型': type_label,
+                        '文件名': batch.file_name,
+                        '部门': dept,
+                        '员工编号': eid,
+                        '姓名': name,
+                        '状态': '更新',
+                    })
                 for eid in batch.new_employees:
                     r = self.store.get_record(eid)
-                    new_names.append(f'{r.name}({eid})' if r else eid)
-                skipped_names = []
+                    name = r.name if r else eid
+                    dept = r.department if r else '-'
+                    new_names.append(f'{name}({eid})')
+                    people_data.append({
+                        '批次ID': batch.batch_id,
+                        '导入类型': type_label,
+                        '文件名': batch.file_name,
+                        '部门': dept,
+                        '员工编号': eid,
+                        '姓名': name,
+                        '状态': '新增',
+                    })
                 for eid in batch.skipped_employees:
                     r = self.store.get_record(eid)
-                    skipped_names.append(f'{r.name}({eid})' if r else eid)
+                    name = r.name if r else eid
+                    dept = r.department if r else '-'
+                    skipped_names.append(f'{name}({eid})')
+                    people_data.append({
+                        '批次ID': batch.batch_id,
+                        '导入类型': type_label,
+                        '文件名': batch.file_name,
+                        '部门': dept,
+                        '员工编号': eid,
+                        '姓名': name,
+                        '状态': '跳过(已锁定)',
+                    })
 
                 batch_data.append({
                     '批次ID': batch.batch_id,
@@ -495,9 +600,17 @@ class AuditWindow(QWidget):
                 if op_data:
                     pd.DataFrame(op_data).to_excel(writer, index=False, sheet_name='操作记录')
                 if batch_data:
-                    pd.DataFrame(batch_data).to_excel(writer, index=False, sheet_name='导入批次明细')
+                    pd.DataFrame(batch_data).to_excel(writer, index=False, sheet_name='导入批次汇总')
+                if people_data:
+                    pd.DataFrame(people_data).to_excel(writer, index=False, sheet_name='导入人员明细')
 
-            total = len(op_data) + len(batch_data)
-            QMessageBox.information(self, '提示', f'成功导出 {len(op_data)} 条操作记录 + {len(batch_data)} 条导入批次明细')
+            parts = []
+            if op_data:
+                parts.append(f'{len(op_data)}条操作记录')
+            if batch_data:
+                parts.append(f'{len(batch_data)}条批次汇总')
+            if people_data:
+                parts.append(f'{len(people_data)}条人员明细')
+            QMessageBox.information(self, '提示', f'成功导出: {" + ".join(parts)}')
         except Exception as e:
             QMessageBox.warning(self, '导出失败', f'导出失败: {str(e)}')

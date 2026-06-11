@@ -370,7 +370,7 @@ class DataStore:
                 errors.append(msg)
         return success, failed, errors
 
-    def lock_record(self, emp_id: str, check_review: bool = True) -> Tuple[bool, str]:
+    def lock_record(self, emp_id: str, check_review: bool = True, dry_run: bool = False) -> Tuple[bool, str]:
         record = self.records.get(emp_id)
         if not record:
             return False, '员工不存在'
@@ -383,6 +383,8 @@ class DataStore:
                 return False, f'员工 {record.name} 还有复核步骤未完成：{steps}。请完成所有复核后再锁定。'
             if record.has_unresolved_issues():
                 return False, f'员工 {record.name} 还有未解决的问题，请先处理所有问题。'
+        if dry_run:
+            return True, '模拟检查通过'
         record.is_locked = True
         record.status = SalaryStatus.LOCKED
         record.confirm_time = datetime.now()

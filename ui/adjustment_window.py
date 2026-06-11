@@ -200,7 +200,6 @@ class AdjustmentWindow(QWidget):
     def refresh(self):
         self._reload_employees()
         self._reload_log_employees()
-        self._populate_history()
         self._restore_filter_state()
 
     def _restore_filter_state(self):

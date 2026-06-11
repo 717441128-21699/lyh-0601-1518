@@ -3,12 +3,13 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QComboBox, QMessageBox,
     QFileDialog, QSplitter, QFrame, QInputDialog, QStatusBar, QDialog,
-    QTextEdit,
+    QTextEdit, QTabWidget,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QBrush, QFont
 
 from models.data_store import DataStore
+from models.data_models import OperationType
 from services.excel_service import export_final_salary, export_review_list, export_adjustments
 
 
@@ -96,10 +97,18 @@ class ConfirmWindow(QWidget):
         )
         self.btn_precheck.clicked.connect(self._show_precheck_report)
 
+        self.btn_simulate_lock = QPushButton('🔍 模拟检查锁定')
+        self.btn_simulate_lock.setStyleSheet(
+            'font-size: 13px; font-weight: bold; padding: 6px 16px; '
+            'background: #2980b9; color: white; border-radius: 4px;'
+        )
+        self.btn_simulate_lock.clicked.connect(self._simulate_and_lock_selected)
+
         action_layout.addWidget(self.btn_confirm_selected)
         action_layout.addWidget(self.btn_unlock_selected)
         action_layout.addWidget(self.btn_confirm_all)
         action_layout.addWidget(self.btn_precheck)
+        action_layout.addWidget(self.btn_simulate_lock)
         action_layout.addStretch()
 
         export_group = QGroupBox('导出')
@@ -195,7 +204,6 @@ class ConfirmWindow(QWidget):
     def refresh(self):
         self._reload_depts()
         self._update_summary()
-        self._populate_table()
         self._restore_filter_state()
 
     def _restore_filter_state(self):
@@ -455,6 +463,233 @@ class ConfirmWindow(QWidget):
 
         self.refresh()
 
+    def _simulate_and_lock_selected(self):
+        rows = set(i.row() for i in self.table.selectedItems())
+        if not rows:
+            QMessageBox.information(self, '提示', '请先在表格中选择员工（可按住Ctrl多选）')
+            return
+
+        to_lock = []
+        skipped_already_locked = []
+        will_fail = []
+
+        for row in rows:
+            emp_id = self.table.item(row, 0).data(Qt.UserRole)
+            if not emp_id:
+                continue
+            record = self.store.get_record(emp_id)
+            if not record:
+                continue
+            if record.is_locked:
+                skipped_already_locked.append((record.emp_id, record.name, record.department))
+                continue
+            ok_pre, msg_pre = self.store.lock_record(emp_id, check_review=True, dry_run=True)
+            if ok_pre:
+                diff = None
+                last_net = None
+                if record.last_month_salary:
+                    last_net = record.last_month_salary.net_salary
+                    diff = record.salary.net_salary - last_net
+                to_lock.append({
+                    'emp_id': record.emp_id,
+                    'name': record.name,
+                    'department': record.department,
+                    'net_salary': record.salary.net_salary,
+                    'last_net': last_net,
+                    'diff': diff,
+                })
+            else:
+                diff = None
+                last_net = None
+                if record.last_month_salary:
+                    last_net = record.last_month_salary.net_salary
+                    diff = record.salary.net_salary - last_net
+                will_fail.append({
+                    'emp_id': record.emp_id,
+                    'name': record.name,
+                    'department': record.department,
+                    'net_salary': record.salary.net_salary,
+                    'last_net': last_net,
+                    'diff': diff,
+                    'reason': msg_pre,
+                })
+
+        self._show_lock_simulation_dialog(to_lock, skipped_already_locked, will_fail)
+
+    def _show_lock_simulation_dialog(self, to_lock, skipped_already_locked, will_fail):
+        total_amount = sum(x['net_salary'] for x in to_lock)
+        total_diff = sum(x['diff'] for x in to_lock if x['diff'] is not None)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('锁定前模拟检查')
+        dialog.setMinimumSize(950, 680)
+        dialog.resize(1050, 720)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+
+        header = QLabel('🔍 本次锁定模拟检查结果')
+        header.setStyleSheet('font-size: 18px; font-weight: bold; color: #2c3e50; padding: 4px 0;')
+        layout.addWidget(header)
+
+        stat_row = QHBoxLayout()
+        stat_row.setSpacing(12)
+        ok_card = self._make_report_card('可锁定', str(len(to_lock)), '#27ae60')
+        skip_card = self._make_report_card('已锁定(跳过)', str(len(skipped_already_locked)), '#95a5a6')
+        fail_card = self._make_report_card('会失败', str(len(will_fail)), '#e74c3c')
+        amount_card = self._make_report_card('锁定总额', f'{total_amount:,.0f}', '#3498db')
+        diff_color = '#27ae60' if total_diff >= 0 else '#c0392b'
+        diff_card = self._make_report_card('金额变化', f'{total_diff:+,.0f}', diff_color)
+        for c in [ok_card, skip_card, fail_card, amount_card, diff_card]:
+            stat_row.addWidget(c)
+        stat_row.addStretch()
+        layout.addLayout(stat_row)
+
+        tabs = QTabWidget()
+
+        def _build_people_table(data_list, columns, color, show_diff=True, show_reason=False):
+            tbl = QTableWidget()
+            cols = columns[:]
+            if show_reason:
+                cols.append('失败原因')
+            tbl.setColumnCount(len(cols))
+            tbl.setHorizontalHeaderLabels(cols)
+            for i in range(len(cols)):
+                if i < len(cols) - (1 if show_reason else 0):
+                    tbl.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            if show_reason:
+                tbl.horizontalHeader().setSectionResizeMode(len(cols) - 1, QHeaderView.Stretch)
+            tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+            tbl.setAlternatingRowColors(True)
+            tbl.verticalHeader().setVisible(False)
+            tbl.setRowCount(len(data_list))
+
+            for row, item in enumerate(data_list):
+                if isinstance(item, tuple):
+                    values = list(item) + ['-'] * (len(cols) - len(item))
+                else:
+                    values = [
+                        item.get('emp_id', '-'),
+                        item.get('name', '-'),
+                        item.get('department', '-'),
+                        f'{item.get("net_salary", 0):,.2f}',
+                    ]
+                    if show_diff:
+                        diff = item.get('diff')
+                        values.append(f'{diff:+,.2f}' if diff is not None else '-')
+                    if show_reason:
+                        values.append(item.get('reason', '-'))
+
+                for col, val in enumerate(values):
+                    cell = QTableWidgetItem(str(val))
+                    if col < len(cols) - (1 if show_reason else 0):
+                        cell.setTextAlignment(Qt.AlignCenter)
+                    else:
+                        cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                    cell.setBackground(QBrush(QColor(color)))
+                    if show_diff and col == 4 and not isinstance(item, tuple):
+                        diff = item.get('diff')
+                        if diff is not None:
+                            if diff > 0:
+                                cell.setForeground(QBrush(QColor('#27ae60')))
+                            elif diff < 0:
+                                cell.setForeground(QBrush(QColor('#c0392b')))
+                            font = cell.font()
+                            font.setBold(True)
+                            cell.setFont(font)
+                    if show_reason and col == len(cols) - 1:
+                        cell.setForeground(QBrush(QColor('#c0392b')))
+                    tbl.setItem(row, col, cell)
+            return tbl
+
+        ok_tab = QWidget()
+        otl = QVBoxLayout(ok_tab)
+        ok_hint = QLabel(f'以下 {len(to_lock)} 人满足所有条件，确认后将被锁定：')
+        ok_hint.setStyleSheet('font-size: 12px; padding: 4px 6px; background: #d5f5e3; border-radius: 4px;')
+        otl.addWidget(ok_hint)
+        ok_table = _build_people_table(to_lock, ['员工编号', '姓名', '部门', '本月实发', '较上月变化'], '#e8f8f0')
+        otl.addWidget(ok_table)
+        tabs.addTab(ok_tab, f'✅ 可锁定({len(to_lock)})')
+
+        skip_tab = QWidget()
+        stl = QVBoxLayout(skip_tab)
+        skip_hint = QLabel(f'以下 {len(skipped_already_locked)} 人已是锁定状态，将被跳过：')
+        skip_hint.setStyleSheet('font-size: 12px; padding: 4px 6px; background: #ecf0f1; border-radius: 4px;')
+        stl.addWidget(skip_hint)
+        skip_table = _build_people_table(skipped_already_locked, ['员工编号', '姓名', '部门'], '#f2f3f4', show_diff=False)
+        stl.addWidget(skip_table)
+        tabs.addTab(skip_tab, f'⏭ 已锁定跳过({len(skipped_already_locked)})')
+
+        fail_tab = QWidget()
+        ftl = QVBoxLayout(fail_tab)
+        fail_hint = QLabel(f'以下 {len(will_fail)} 人不满足条件，锁定会失败，请先处理：')
+        fail_hint.setStyleSheet('font-size: 12px; padding: 4px 6px; background: #fadbd8; border-radius: 4px;')
+        ftl.addWidget(fail_hint)
+        fail_table = _build_people_table(will_fail, ['员工编号', '姓名', '部门', '本月实发', '较上月变化'], '#fde8e8', show_diff=True, show_reason=True)
+        ftl.addWidget(fail_table)
+        tabs.addTab(fail_tab, f'❌ 会失败({len(will_fail)})')
+
+        layout.addWidget(tabs, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton('取消')
+        btn_cancel.setMinimumWidth(100)
+        btn_cancel.setMinimumHeight(38)
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_row.addWidget(btn_cancel)
+
+        btn_execute = QPushButton(f'确认锁定 {len(to_lock)} 人')
+        btn_execute.setMinimumWidth(200)
+        btn_execute.setMinimumHeight(38)
+        btn_execute.setStyleSheet('font-size: 14px; font-weight: bold; background: #27ae60; color: white; border-radius: 4px;')
+        if len(to_lock) == 0:
+            btn_execute.setEnabled(False)
+            btn_execute.setText('暂无可锁定人员')
+        btn_execute.clicked.connect(lambda: self._execute_simulated_lock(dialog, to_lock))
+        btn_row.addWidget(btn_execute)
+        layout.addLayout(btn_row)
+
+        dialog.exec_()
+
+    def _execute_simulated_lock(self, dialog, to_lock):
+        reply = QMessageBox.question(
+            self, '最终确认',
+            f'即将锁定 {len(to_lock)} 人，操作不可撤销（取消锁定需填原因并留痕），是否继续？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success = 0
+        errors = []
+        succeeded_people = []
+        for item in to_lock:
+            ok, msg = self.store.lock_record(item['emp_id'], check_review=True)
+            if ok:
+                success += 1
+                succeeded_people.append(f'{item["name"]}({item["emp_id"]})')
+            else:
+                errors.append(f'{item["name"]}({item["emp_id"]}): {msg}')
+
+        if succeeded_people:
+            self.store._log_operation(
+                OperationType.BATCH_LOCK,
+                '', '',
+                f'通过模拟检查批量锁定{len(succeeded_people)}人：{", ".join(succeeded_people)}'
+            )
+
+        dialog.accept()
+        self.refresh()
+
+        result_parts = [f'成功锁定 {success} 人']
+        if errors:
+            result_parts.append(f'失败 {len(errors)} 人：')
+            result_parts.extend([f'  - {e}' for e in errors])
+            QMessageBox.warning(self, '部分失败', '\n'.join(result_parts))
+        else:
+            QMessageBox.information(self, '完成', '\n'.join(result_parts))
+
     def _confirm_all_clean(self):
         records = [r for r in self.store.get_all_records() if not r.is_locked]
 
@@ -539,6 +774,7 @@ class ConfirmWindow(QWidget):
         not_ready = []
         total_diff_amount = 0.0
         total_issues = 0
+        fluct = self.store.fluctuation_threshold
 
         for r in unlocked_records:
             reasons = []
@@ -553,8 +789,11 @@ class ConfirmWindow(QWidget):
                 reasons.append(f'有 {len(unresolved)} 个未解决问题')
                 total_issues += len(unresolved)
 
+            diff = None
+            last_net = None
             if r.last_month_salary:
-                diff = r.salary.net_salary - r.last_month_salary.net_salary
+                last_net = r.last_month_salary.net_salary
+                diff = r.salary.net_salary - last_net
                 total_diff_amount += diff
 
             if reasons:
@@ -563,79 +802,169 @@ class ConfirmWindow(QWidget):
                     'name': r.name,
                     'department': r.department,
                     'net_salary': r.salary.net_salary,
-                    'last_net': r.last_month_salary.net_salary if r.last_month_salary else None,
-                    'diff': (r.salary.net_salary - r.last_month_salary.net_salary) if r.last_month_salary else None,
+                    'last_net': last_net,
+                    'diff': diff,
                     'reasons': reasons,
                     'issues': unresolved,
                 })
             else:
                 ready_count += 1
 
+        def classify(item):
+            if item['diff'] is None:
+                return '无上月数据'
+            if abs(item['diff']) > 0 and abs(item['diff']) / max(abs(item['last_net']), 1) > fluct:
+                if item['diff'] > 0:
+                    return '大额上涨'
+                else:
+                    return '大额下降'
+            if item['issues']:
+                return '有未解决问题'
+            only_steps = all('未解决' not in x for x in item['reasons'])
+            if only_steps and len(item['reasons']) <= 2:
+                return '仅差复核步骤'
+            return '其他待处理'
+
+        groups = {'大额上涨': [], '大额下降': [], '有未解决问题': [],
+                   '无上月数据': [], '仅差复核步骤': [], '其他待处理': []}
+        for item in not_ready:
+            groups[classify(item)].append(item)
+
         dialog = QDialog(self)
         dialog.setWindowTitle('发薪前最终预检报告')
-        dialog.setMinimumSize(900, 650)
-        dialog.resize(1000, 700)
+        dialog.setMinimumSize(1000, 720)
+        dialog.resize(1100, 780)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        header = QLabel('📋 发薪前最终预检报告')
-        header.setStyleSheet(
-            'font-size: 20px; font-weight: bold; color: #2c3e50; '
-            'padding: 8px 0;'
-        )
+        header = QLabel('📋 发薪前最终预检报告（按风险分组）')
+        header.setStyleSheet('font-size: 18px; font-weight: bold; color: #2c3e50; padding: 6px 0;')
         layout.addWidget(header)
 
         stat_row = QHBoxLayout()
-        stat_row.setSpacing(16)
-
+        stat_row.setSpacing(12)
         total_card = self._make_report_card('总人数', str(len(records)), '#3498db')
         locked_card = self._make_report_card('已锁定', str(len(records) - len(unlocked_records)), '#27ae60')
         ready_card = self._make_report_card('可锁定', str(ready_count), '#27ae60')
         not_ready_card = self._make_report_card('待处理', str(len(not_ready)), '#e74c3c')
         issues_card = self._make_report_card('未解决问题', str(total_issues), '#e67e22')
-
         for card in [total_card, locked_card, ready_card, not_ready_card, issues_card]:
             stat_row.addWidget(card)
         layout.addLayout(stat_row)
 
         amount_row = QHBoxLayout()
         amount_label = QLabel(f'本月实发总额：{sum(r.salary.net_salary for r in records):,.2f} 元')
-        amount_label.setStyleSheet(
-            'font-size: 15px; font-weight: bold; padding: 8px 16px; '
-            'background: #e8f6f3; color: #16a085; border-radius: 4px;'
-        )
+        amount_label.setStyleSheet('font-size: 14px; font-weight: bold; padding: 6px 14px; background: #e8f6f3; color: #16a085; border-radius: 4px;')
         amount_row.addWidget(amount_label)
-
-        diff_label_text = f'较上月变化：{total_diff_amount:+,.2f} 元'
-        diff_label = QLabel(diff_label_text)
         diff_color = '#27ae60' if total_diff_amount >= 0 else '#c0392b'
-        diff_label.setStyleSheet(
-            f'font-size: 15px; font-weight: bold; padding: 8px 16px; '
-            f'background: #f8f9f9; color: {diff_color}; border-radius: 4px;'
-        )
+        diff_label = QLabel(f'较上月变化：{total_diff_amount:+,.2f} 元')
+        diff_label.setStyleSheet(f'font-size: 14px; font-weight: bold; padding: 6px 14px; background: #f8f9f9; color: {diff_color}; border-radius: 4px;')
         amount_row.addWidget(diff_label)
         amount_row.addStretch()
         layout.addLayout(amount_row)
 
-        detail_group = QGroupBox(f'待处理人员明细（共 {len(not_ready)} 人）')
-        detail_layout = QVBoxLayout(detail_group)
+        group_row = QHBoxLayout()
+        group_row.setSpacing(8)
+        group_meta = [
+            ('大额上涨', '#c0392b', groups['大额上涨']),
+            ('大额下降', '#e67e22', groups['大额下降']),
+            ('有未解决问题', '#8e44ad', groups['有未解决问题']),
+            ('无上月数据', '#2980b9', groups['无上月数据']),
+            ('仅差复核步骤', '#16a085', groups['仅差复核步骤']),
+            ('其他待处理', '#7f8c8d', groups['其他待处理']),
+        ]
+        for name, color, members in group_meta:
+            lbl = QLabel(f'{name}: {len(members)}人')
+            lbl.setStyleSheet(f'font-size: 13px; font-weight: bold; padding: 4px 12px; background: white; border: 2px solid {color}; color: {color}; border-radius: 12px;')
+            group_row.addWidget(lbl)
+        group_row.addStretch()
+        layout.addLayout(group_row)
 
-        detail_table = QTableWidget()
-        detail_table.setColumnCount(7)
-        detail_table.setHorizontalHeaderLabels([
+        tabs = QTabWidget()
+        group_color = {
+            '大额上涨': '#fadbd8', '大额下降': '#fdebd0',
+            '有未解决问题': '#ebdef0', '无上月数据': '#d4e6f1',
+            '仅差复核步骤': '#d5f5e3', '其他待处理': '#eaecee',
+        }
+        for name, color, members in group_meta:
+            tab = QWidget()
+            tl = QVBoxLayout(tab)
+            tl.setContentsMargins(4, 4, 4, 4)
+
+            hint = QLabel(f'优先级说明：{name} — 共 {len(members)} 人')
+            hint.setStyleSheet(f'font-size: 12px; color: #555; padding: 4px 6px; background: {color}; border-radius: 4px;')
+            tl.addWidget(hint)
+
+            tbl = QTableWidget()
+            tbl.setColumnCount(7)
+            tbl.setHorizontalHeaderLabels([
+                '员工编号', '姓名', '部门', '本月实发', '上月实发', '较上月变化', '未完成项'
+            ])
+            for i in range(7):
+                if i != 6:
+                    tbl.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            tbl.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+            tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+            tbl.setAlternatingRowColors(True)
+            tbl.verticalHeader().setVisible(False)
+            tbl.setRowCount(len(members))
+
+            for row, item in enumerate(sorted(members, key=lambda x: x['department'])):
+                diff_val = item.get('diff')
+                diff_text = f'{diff_val:+,.2f}' if diff_val is not None else '-'
+                values = [
+                    item['emp_id'], item['name'], item['department'],
+                    f'{item["net_salary"]:.2f}',
+                    f'{item["last_net"]:.2f}' if item['last_net'] is not None else '-',
+                    diff_text,
+                    '；'.join(item['reasons']),
+                ]
+                for col, val in enumerate(values):
+                    cell = QTableWidgetItem(str(val))
+                    if col < 6:
+                        cell.setTextAlignment(Qt.AlignCenter)
+                    else:
+                        cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                    cell.setBackground(QBrush(QColor(color)))
+                    if col == 5 and diff_val is not None:
+                        if diff_val > 0:
+                            cell.setForeground(QBrush(QColor('#27ae60')))
+                        elif diff_val < 0:
+                            cell.setForeground(QBrush(QColor('#c0392b')))
+                        font = cell.font()
+                        font.setBold(True)
+                        cell.setFont(font)
+                    if col == 6:
+                        cell.setForeground(QBrush(QColor('#c0392b')))
+                        font = cell.font()
+                        font.setBold(True)
+                        cell.setFont(font)
+                    tbl.setItem(row, col, cell)
+
+            tl.addWidget(tbl)
+            tabs.addTab(tab, f'{name}({len(members)})')
+
+        all_tab = QWidget()
+        atl = QVBoxLayout(all_tab)
+        atl.setContentsMargins(4, 4, 4, 4)
+        all_hint = QLabel(f'全部待处理人员 — 共 {len(not_ready)} 人')
+        all_hint.setStyleSheet('font-size: 12px; color: #555; padding: 4px 6px; background: #f8f9f9; border-radius: 4px;')
+        atl.addWidget(all_hint)
+
+        all_table = QTableWidget()
+        all_table.setColumnCount(7)
+        all_table.setHorizontalHeaderLabels([
             '员工编号', '姓名', '部门', '本月实发', '上月实发', '较上月变化', '未完成项'
         ])
-        detail_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        detail_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
-        detail_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        detail_table.setAlternatingRowColors(True)
-        detail_table.setRowCount(len(not_ready))
+        for i in range(7):
+            if i != 6:
+                all_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        all_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        all_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        all_table.setAlternatingRowColors(True)
+        all_table.verticalHeader().setVisible(False)
+        all_table.setRowCount(len(not_ready))
 
         for row, item in enumerate(sorted(not_ready, key=lambda x: x['department'])):
             diff_val = item.get('diff')
@@ -647,13 +976,15 @@ class ConfirmWindow(QWidget):
                 diff_text,
                 '；'.join(item['reasons']),
             ]
+            gname = classify(item)
+            gcolor = group_color.get(gname, '#fdf2e9')
             for col, val in enumerate(values):
                 cell = QTableWidgetItem(str(val))
                 if col < 6:
                     cell.setTextAlignment(Qt.AlignCenter)
                 else:
                     cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-                cell.setBackground(QBrush(QColor('#fdf2e9')))
+                cell.setBackground(QBrush(QColor(gcolor)))
                 if col == 5 and diff_val is not None:
                     if diff_val > 0:
                         cell.setForeground(QBrush(QColor('#27ae60')))
@@ -667,29 +998,27 @@ class ConfirmWindow(QWidget):
                     font = cell.font()
                     font.setBold(True)
                     cell.setFont(font)
-                detail_table.setItem(row, col, cell)
+                all_table.setItem(row, col, cell)
 
-        detail_layout.addWidget(detail_table)
-        layout.addWidget(detail_group, stretch=1)
+        atl.addWidget(all_table)
+        tabs.addTab(all_tab, f'全部({len(not_ready)})')
+
+        layout.addWidget(tabs, stretch=1)
 
         issue_summary = QGroupBox('未解决问题汇总')
         issue_layout = QVBoxLayout(issue_summary)
         issue_text = QTextEdit()
         issue_text.setReadOnly(True)
-        issue_text.setMaximumHeight(150)
-
+        issue_text.setMaximumHeight(120)
         if not_ready:
             lines = []
-            for item in not_ready[:20]:
+            for item in not_ready:
                 if item['issues']:
                     issue_msgs = '; '.join(i.message for i in item['issues'][:3])
                     lines.append(f'【{item["name"]}({item["emp_id"]})】{issue_msgs}')
-            if len(not_ready) > 20:
-                lines.append(f'... 还有 {len(not_ready) - 20} 人的问题未列出')
             issue_text.setPlainText('\n'.join(lines) if lines else '暂无未解决问题')
         else:
             issue_text.setPlainText('🎉 所有人员均已完成复核，无未解决问题！')
-
         issue_layout.addWidget(issue_text)
         layout.addWidget(issue_summary)
 
@@ -706,8 +1035,7 @@ class ConfirmWindow(QWidget):
         btn_lock_ready.setMinimumWidth(180)
         btn_lock_ready.setMinimumHeight(38)
         btn_lock_ready.setStyleSheet(
-            'font-size: 14px; font-weight: bold; '
-            'background: #27ae60; color: white; border-radius: 4px;'
+            'font-size: 14px; font-weight: bold; background: #27ae60; color: white; border-radius: 4px;'
         )
         if ready_count == 0:
             btn_lock_ready.setEnabled(False)

@@ -324,7 +324,6 @@ class RuleCheckWindow(QWidget):
         if self.store.import_status['salary']:
             self._all_issues = self.checker.check_all(refresh=True)
             if self._all_issues:
-                self._apply_filter()
                 unfinished_rule = sum(
                     1 for r in self.store.get_all_records()
                     if not r.is_locked and not r.review_steps.rule_checked

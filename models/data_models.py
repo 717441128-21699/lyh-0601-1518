@@ -25,6 +25,7 @@ class OperationType(Enum):
     ISSUE_RESOLVED = '问题标记已解决'
     BATCH_RULE_CHECK = '批量规则检查'
     BATCH_DIFF_CHECK = '批量差异核对'
+    BATCH_LOCK = '批量锁定确认'
     PROJECT_SAVED = '项目保存'
     PROJECT_LOADED = '项目加载'
 
